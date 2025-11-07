@@ -48,23 +48,28 @@ func TestDNFManager_parseUpgradablePackages(t *testing.T) {
 	manager := NewDNFManager(logger)
 
 	tests := []struct {
-		name     string
-		input    string
-		pkgMgr   string
-		expected int
+		name             string
+		input            string
+		pkgMgr           string
+		installedPackages map[string]string
+		expected         int
 	}{
 		{
 			name: "upgradable packages",
 			input: `kernel.x86_64                     5.14.0-284.30.1.el9_2           baseos
 systemd.x86_64                    252-14.el9_2.2                  baseos`,
-			pkgMgr:   "dnf",
+			pkgMgr: "dnf",
+			installedPackages: map[string]string{
+				"kernel.x86_64":  "5.14.0-284.30.1.el9_1",
+				"systemd.x86_64": "252-14.el9_2.1",
+			},
 			expected: 2,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := manager.parseUpgradablePackages(tt.input, tt.pkgMgr)
+			result := manager.parseUpgradablePackages(tt.input, tt.pkgMgr, tt.installedPackages)
 			assert.Equal(t, tt.expected, len(result))
 		})
 	}
