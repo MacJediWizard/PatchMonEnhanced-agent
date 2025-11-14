@@ -13,6 +13,7 @@ type Manager struct {
 	logger     *logrus.Logger
 	aptManager *APTManager
 	dnfManager *DNFManager
+	apkManager *APKManager
 }
 
 // New creates a new repository manager
@@ -21,6 +22,7 @@ func New(logger *logrus.Logger) *Manager {
 		logger:     logger,
 		aptManager: NewAPTManager(logger),
 		dnfManager: NewDNFManager(logger),
+		apkManager: NewAPKManager(logger),
 	}
 }
 
@@ -36,6 +38,8 @@ func (m *Manager) GetRepositories() ([]models.Repository, error) {
 	case "dnf", "yum":
 		repos := m.dnfManager.GetRepositories()
 		return repos, nil
+	case "apk":
+		return m.apkManager.GetRepositories()
 	default:
 		m.logger.WithField("package_manager", packageManager).Warn("Unsupported package manager")
 		return []models.Repository{}, nil
@@ -44,7 +48,12 @@ func (m *Manager) GetRepositories() ([]models.Repository, error) {
 
 // detectPackageManager detects which package manager is available on the system
 func (m *Manager) detectPackageManager() string {
-	// Check for APT first
+	// Check for APK first (Alpine Linux)
+	if _, err := exec.LookPath("apk"); err == nil {
+		return "apk"
+	}
+
+	// Check for APT
 	if _, err := exec.LookPath("apt"); err == nil {
 		return "apt"
 	}

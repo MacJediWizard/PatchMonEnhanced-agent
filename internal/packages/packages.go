@@ -14,17 +14,20 @@ type Manager struct {
 	logger     *logrus.Logger
 	aptManager *APTManager
 	dnfManager *DNFManager
+	apkManager *APKManager
 }
 
 // New creates a new package manager
 func New(logger *logrus.Logger) *Manager {
 	aptManager := NewAPTManager(logger)
 	dnfManager := NewDNFManager(logger)
+	apkManager := NewAPKManager(logger)
 
 	return &Manager{
 		logger:     logger,
 		aptManager: aptManager,
 		dnfManager: dnfManager,
+		apkManager: apkManager,
 	}
 }
 
@@ -39,6 +42,8 @@ func (m *Manager) GetPackages() ([]models.Package, error) {
 		return m.aptManager.GetPackages(), nil
 	case "dnf", "yum":
 		return m.dnfManager.GetPackages(), nil
+	case "apk":
+		return m.apkManager.GetPackages(), nil
 	default:
 		return nil, fmt.Errorf("unsupported package manager: %s", packageManager)
 	}
@@ -46,7 +51,12 @@ func (m *Manager) GetPackages() ([]models.Package, error) {
 
 // detectPackageManager detects which package manager is available on the system
 func (m *Manager) detectPackageManager() string {
-	// Check for APT first
+	// Check for APK first (Alpine Linux)
+	if _, err := exec.LookPath("apk"); err == nil {
+		return "apk"
+	}
+
+	// Check for APT
 	if _, err := exec.LookPath("apt"); err == nil {
 		return "apt"
 	}
@@ -67,7 +77,7 @@ func (m *Manager) detectPackageManager() string {
 
 // CombinePackageData combines and deduplicates installed and upgradable package lists
 func CombinePackageData(installedPackages map[string]string, upgradablePackages []models.Package) []models.Package {
-	var packages []models.Package
+	packages := make([]models.Package, 0)
 	upgradableMap := make(map[string]bool)
 
 	// First, add all upgradable packages

@@ -28,7 +28,7 @@ const (
 	ArchAMD64   = "amd64"
 	ArchARM64   = "arm64"
 	ArchAARCH64 = "aarch64"
-	ArchUnknown = "unknown"
+	ArchUnknown = "arch_unknown"
 )
 
 // Network interface types
@@ -50,6 +50,7 @@ const (
 	RepoTypeDeb    = "deb"
 	RepoTypeDebSrc = "deb-src"
 	RepoTypeRPM    = "rpm"
+	RepoTypeAPK    = "apk"
 )
 
 // Log level constants

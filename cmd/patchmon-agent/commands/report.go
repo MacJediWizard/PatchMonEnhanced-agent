@@ -89,6 +89,10 @@ func sendReport() error {
 	if err != nil {
 		return fmt.Errorf("failed to get packages: %w", err)
 	}
+	// Ensure packageList is never nil (should be empty slice, not nil)
+	if packageList == nil {
+		packageList = []models.Package{}
+	}
 
 	// Count packages for debug logging
 	needsUpdateCount := 0
