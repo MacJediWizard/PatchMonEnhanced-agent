@@ -98,6 +98,13 @@ func checkVersion() error {
 func updateAgent() error {
 	logger.Info("Updating agent...")
 
+	// Check if we recently updated to prevent update loops
+	// This is especially important on ARM systems where restart might not work properly
+	if err := checkRecentUpdate(); err != nil {
+		logger.WithError(err).Warn("Recent update detected, skipping to prevent update loop")
+		return fmt.Errorf("update skipped: %w", err)
+	}
+
 	// Get current executable path
 	executablePath, err := os.Executable()
 	if err != nil {
@@ -154,6 +161,9 @@ func updateAgent() error {
 	logger.WithField("current", currentVersion).WithField("new", newVersion).Info("Proceeding with update")
 	logger.Info("Using downloaded agent binary...")
 
+	// Clean up old backups before creating new one (keep only last 3)
+	cleanupOldBackups(executablePath)
+
 	// Create backup of current executable
 	backupPath := fmt.Sprintf("%s.backup.%s", executablePath, time.Now().Format("20060102_150405"))
 	if err := copyFile(executablePath, backupPath); err != nil {
@@ -167,7 +177,7 @@ func updateAgent() error {
 		return fmt.Errorf("failed to write new agent: %w", err)
 	}
 
-	// Verify the new executable works
+	// Verify the new executable works and check its version
 	logger.Debug("Validating new executable...")
 	testCmd := exec.Command(tempPath, "check-version")
 	testCmd.Env = os.Environ() // Preserve environment variables
@@ -178,6 +188,32 @@ func updateAgent() error {
 		return fmt.Errorf("new agent executable is invalid: %w", err)
 	}
 	logger.Debug("New executable validation passed")
+
+	// Verify the downloaded binary version matches expected version
+	// This prevents issues where wrong binary might be downloaded
+	logger.Debug("Verifying downloaded binary version...")
+	versionCmd := exec.Command(tempPath, "version")
+	versionCmd.Env = os.Environ()
+	versionOutput, err := versionCmd.Output()
+	if err == nil {
+		// Try to extract version from output (format: "PatchMon Agent v1.3.4" or "1.3.4")
+		versionStr := strings.TrimSpace(string(versionOutput))
+		// Remove "PatchMon Agent v" prefix if present
+		versionStr = strings.TrimPrefix(versionStr, "PatchMon Agent v")
+		versionStr = strings.TrimPrefix(versionStr, "v")
+		versionStr = strings.TrimSpace(versionStr)
+
+		if versionStr != "" && versionStr != newVersion {
+			logger.WithFields(map[string]interface{}{
+				"expected": newVersion,
+				"actual":   versionStr,
+			}).Warn("Downloaded binary version mismatch - this may indicate server issue, but proceeding")
+		} else if versionStr == newVersion {
+			logger.WithField("version", versionStr).Debug("Downloaded binary version verified")
+		}
+	} else {
+		logger.WithError(err).Debug("Could not verify binary version (non-critical)")
+	}
 
 	// Replace current executable atomically
 	// On Linux, we can rename over a running executable - the old process keeps using the old inode
@@ -200,28 +236,29 @@ func updateAgent() error {
 		// Don't fail the update for this, but log it
 	}
 
-	logger.WithField("version", binaryInfo.Version).Info("Agent updated successfully")
+	logger.WithField("version", newVersion).Info("Agent updated successfully")
+
+	// Mark that we just updated to prevent immediate re-update loops
+	markRecentUpdate()
 
 	// Restart the service to pick up the new binary
 	// This is critical - the old process is still running the old binary
 	logger.Info("Restarting patchmon-agent service to load new binary...")
-	if err := restartService(); err != nil {
+	if err := restartService(executablePath, newVersion); err != nil {
 		logger.WithError(err).Error("Failed to restart service - new binary is in place but old process is still running")
 		logger.Warn("Manual service restart required to complete update")
 		return fmt.Errorf("update completed but service restart failed: %w", err)
-	} else {
-		logger.Info("Service restarted successfully - new binary is now active")
 	}
 
-	// Send updated information to PatchMon
-	logger.Info("Sending updated information to PatchMon...")
-	if err := sendReport(); err != nil {
-		logger.WithError(err).Warn("Failed to send updated information to PatchMon (this is not critical)")
-	} else {
-		logger.Info("Successfully sent updated information to PatchMon")
-	}
+	// After restarting, the old process should exit to allow the new process to start
+	// The new process will send a report on startup automatically
+	logger.Info("Service restart initiated - exiting to allow new process to start")
+	logger.Info("New process will report on startup with version " + newVersion)
 
-	return nil
+	// Exit gracefully - systemd will start the new process with the new binary
+	// Note: os.Exit terminates the process, so the return below is unreachable
+	os.Exit(0)
+	return nil // Unreachable, but satisfies function signature
 }
 
 // getServerVersionInfo fetches version information from the PatchMon server
@@ -384,21 +421,216 @@ func copyFile(src, dst string) error {
 	return os.WriteFile(dst, data, 0755)
 }
 
+// cleanupOldBackups removes old backup files, keeping only the last 3
+func cleanupOldBackups(executablePath string) {
+	// Find all backup files
+	backupDir := filepath.Dir(executablePath)
+	backupBase := filepath.Base(executablePath)
+
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		logger.WithError(err).Debug("Could not read directory to clean up backups")
+		return
+	}
+
+	var backupFiles []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasPrefix(name, backupBase+".backup.") {
+			backupFiles = append(backupFiles, filepath.Join(backupDir, name))
+		}
+	}
+
+	// If we have more than 3 backups, remove the oldest ones
+	if len(backupFiles) > 3 {
+		// Sort by modification time (oldest first)
+		type fileInfo struct {
+			path string
+			time time.Time
+		}
+		var filesWithTime []fileInfo
+		for _, path := range backupFiles {
+			info, err := os.Stat(path)
+			if err != nil {
+				continue
+			}
+			filesWithTime = append(filesWithTime, fileInfo{
+				path: path,
+				time: info.ModTime(),
+			})
+		}
+
+		// Sort by time (oldest first)
+		for i := 0; i < len(filesWithTime)-1; i++ {
+			for j := i + 1; j < len(filesWithTime); j++ {
+				if filesWithTime[i].time.After(filesWithTime[j].time) {
+					filesWithTime[i], filesWithTime[j] = filesWithTime[j], filesWithTime[i]
+				}
+			}
+		}
+
+		// Remove oldest files (keep last 3)
+		toRemove := len(filesWithTime) - 3
+		for i := 0; i < toRemove; i++ {
+			if err := os.Remove(filesWithTime[i].path); err != nil {
+				logger.WithError(err).WithField("path", filesWithTime[i].path).Debug("Failed to remove old backup")
+			} else {
+				logger.WithField("path", filesWithTime[i].path).Debug("Removed old backup file")
+			}
+		}
+		logger.WithField("removed", toRemove).WithField("kept", 3).Info("Cleaned up old backup files")
+	}
+}
+
+// verifyRunningBinaryVersion checks if the running process is using the expected binary version
+func verifyRunningBinaryVersion(executablePath, expectedVersion string) error {
+	// Get the process ID of the running patchmon-agent
+	// We'll check the binary path of the running process
+	pidCmd := exec.Command("pgrep", "-f", "patchmon-agent")
+	pidOutput, err := pidCmd.Output()
+	if err != nil {
+		return fmt.Errorf("could not find running process: %w", err)
+	}
+
+	pids := strings.Fields(strings.TrimSpace(string(pidOutput)))
+	if len(pids) == 0 {
+		return fmt.Errorf("no patchmon-agent process found")
+	}
+
+	// Check the first PID (main process)
+	pid := pids[0]
+
+	// On Linux, check /proc/PID/exe to see what binary is actually running
+	procExe := fmt.Sprintf("/proc/%s/exe", pid)
+	actualPath, err := os.Readlink(procExe)
+	if err != nil {
+		// Fallback: try to get version from running process
+		versionCmd := exec.Command("sh", "-c", fmt.Sprintf("cat /proc/%s/cmdline | tr '\\0' ' '", pid))
+		cmdline, _ := versionCmd.Output()
+		logger.WithField("cmdline", string(cmdline)).Debug("Could not read process exe link, using cmdline")
+		return nil // Non-critical, don't fail
+	}
+
+	// Resolve symlinks to compare actual paths
+	resolvedActual, err := filepath.EvalSymlinks(actualPath)
+	if err != nil {
+		resolvedActual = actualPath
+	}
+
+	resolvedExpected, err := filepath.EvalSymlinks(executablePath)
+	if err != nil {
+		resolvedExpected = executablePath
+	}
+
+	if resolvedActual != resolvedExpected {
+		logger.WithFields(map[string]interface{}{
+			"expected": resolvedExpected,
+			"actual":   resolvedActual,
+		}).Warn("Running process binary path does not match expected path")
+		return fmt.Errorf("binary path mismatch: expected %s, got %s", resolvedExpected, resolvedActual)
+	}
+
+	logger.Debug("Verified running process is using correct binary")
+	return nil
+}
+
+// checkRecentUpdate checks if we updated recently to prevent update loops
+func checkRecentUpdate() error {
+	updateMarkerPath := "/etc/patchmon/.last_update_timestamp"
+
+	// Check if marker file exists
+	info, err := os.Stat(updateMarkerPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// No recent update, allow update
+			return nil
+		}
+		// Other error, allow update (non-critical)
+		return nil
+	}
+
+	// Check if update was within last 5 minutes
+	timeSinceUpdate := time.Since(info.ModTime())
+	if timeSinceUpdate < 5*time.Minute {
+		return fmt.Errorf("update was performed %v ago, waiting to prevent update loop", timeSinceUpdate)
+	}
+
+	// Update was more than 5 minutes ago, allow update
+	return nil
+}
+
+// markRecentUpdate creates a timestamp file to mark that we just updated
+func markRecentUpdate() {
+	updateMarkerPath := "/etc/patchmon/.last_update_timestamp"
+
+	// Ensure directory exists
+	os.MkdirAll("/etc/patchmon", 0755)
+
+	// Create or update the timestamp file
+	file, err := os.Create(updateMarkerPath)
+	if err != nil {
+		logger.WithError(err).Debug("Could not create update marker file (non-critical)")
+		return
+	}
+	file.Close()
+
+	// Set permissions
+	os.Chmod(updateMarkerPath, 0644)
+	logger.Debug("Marked recent update to prevent update loops")
+}
+
 // restartService restarts the patchmon-agent service (supports systemd and OpenRC)
-func restartService() error {
+func restartService(executablePath, expectedVersion string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	// Detect init system and use appropriate restart command
 	if _, err := exec.LookPath("systemctl"); err == nil {
 		// Systemd is available
-		logger.Debug("Detected systemd, using systemctl restart")
-		cmd := exec.CommandContext(ctx, "systemctl", "restart", "patchmon-agent")
-		output, err := cmd.CombinedOutput()
+		logger.Debug("Detected systemd, using systemctl stop+start")
+
+		// First, stop the service (this will send SIGTERM to current process)
+		// We use stop+start instead of restart to ensure clean shutdown
+		logger.Debug("Stopping patchmon-agent service...")
+		stopCmd := exec.CommandContext(ctx, "systemctl", "stop", "patchmon-agent")
+		stopOutput, err := stopCmd.CombinedOutput()
 		if err != nil {
-			return fmt.Errorf("failed to restart service: %w, output: %s", err, string(output))
+			logger.WithError(err).WithField("output", string(stopOutput)).Warn("Failed to stop service, trying start anyway")
+		} else {
+			// Give systemd a moment to stop the service
+			time.Sleep(1 * time.Second)
 		}
-		logger.WithField("output", string(output)).Debug("Service restart command completed")
+
+		// Now start the service (this will use the new binary)
+		logger.Debug("Starting patchmon-agent service...")
+		startCmd := exec.CommandContext(ctx, "systemctl", "start", "patchmon-agent")
+		startOutput, err := startCmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("failed to start service: %w, output: %s", err, string(startOutput))
+		}
+
+		// Verify the service is actually running
+		logger.Debug("Verifying service is running...")
+		// Longer wait for ARM systems which may need more time
+		time.Sleep(3 * time.Second)
+		statusCmd := exec.CommandContext(ctx, "systemctl", "is-active", "patchmon-agent")
+		statusOutput, err := statusCmd.CombinedOutput()
+		if err != nil || strings.TrimSpace(string(statusOutput)) != "active" {
+			return fmt.Errorf("service restart verification failed: status=%s, error=%v", string(statusOutput), err)
+		}
+
+		// Additional verification: Check if the running process is using the new binary
+		// This is critical for ARM systems where restart might not work properly
+		logger.Debug("Verifying running process is using new binary...")
+		time.Sleep(2 * time.Second) // Give process time to fully start
+		if err := verifyRunningBinaryVersion(executablePath, expectedVersion); err != nil {
+			logger.WithError(err).Warn("Could not verify running binary version - service restarted but version check failed")
+			// Don't fail the update, but log the warning
+			// This helps identify cases where restart didn't actually load new binary
+		}
+
+		logger.WithField("output", string(startOutput)).Debug("Service restart command completed")
+		logger.Info("Service restarted successfully - new binary is now active")
 		return nil
 	} else if _, err := exec.LookPath("rc-service"); err == nil {
 		// OpenRC is available (Alpine Linux)

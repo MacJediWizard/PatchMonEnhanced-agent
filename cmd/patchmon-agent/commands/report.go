@@ -214,11 +214,18 @@ func sendReport() error {
 			logger.WithError(err).Warn("PatchMon agent update failed, but data was sent successfully")
 		} else {
 			logger.Info("PatchMon agent update completed successfully")
+			// updateAgent() will exit the process after restart, so we won't reach here
+			// But if it does return, skip the update check to prevent loops
+			return nil
 		}
 	} else {
 		// Proactive update check after report (non-blocking with timeout)
 		// Run in a goroutine to avoid blocking the report completion
 		go func() {
+			// Add a delay to prevent immediate checks after service restart
+			// This gives the new process time to fully initialize
+			time.Sleep(5 * time.Second)
+			
 			logger.Info("Checking for agent updates...")
 			versionInfo, err := getServerVersionInfo()
 			if err != nil {
@@ -235,6 +242,7 @@ func sendReport() error {
 					logger.WithError(err).Warn("PatchMon agent update failed, but data was sent successfully")
 				} else {
 					logger.Info("PatchMon agent update completed successfully")
+					// updateAgent() will exit after restart, so this won't be reached
 				}
 			} else {
 				logger.WithField("version", versionInfo.CurrentVersion).Info("Agent is up to date")
