@@ -98,7 +98,14 @@ type PingResponse struct {
 	Message       string             `json:"message"`
 	Timestamp     string             `json:"timestamp"`
 	FriendlyName  string             `json:"friendlyName"`
+	AgentStartup  bool               `json:"agentStartup,omitempty"`
+	Integrations  *IntegrationsState  `json:"integrations,omitempty"`
 	CrontabUpdate *CrontabUpdateInfo `json:"crontabUpdate,omitempty"`
+}
+
+// IntegrationsState represents integration enabled states from server
+type IntegrationsState struct {
+	Docker bool `json:"docker"`
 }
 
 // UpdateResponse represents server update response
