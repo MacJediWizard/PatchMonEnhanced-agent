@@ -10,6 +10,7 @@ import (
 	"patchmon-agent/internal/client"
 	"patchmon-agent/internal/hardware"
 	"patchmon-agent/internal/integrations"
+	"patchmon-agent/internal/integrations/compliance"
 	"patchmon-agent/internal/integrations/docker"
 	"patchmon-agent/internal/network"
 	"patchmon-agent/internal/packages"
@@ -305,6 +306,7 @@ func sendIntegrationData() {
 
 	// Register available integrations
 	integrationMgr.Register(docker.New(logger))
+	integrationMgr.Register(compliance.New(logger))
 	// Future: integrationMgr.Register(proxmox.New(logger))
 	// Future: integrationMgr.Register(kubernetes.New(logger))
 
@@ -330,6 +332,11 @@ func sendIntegrationData() {
 	// Send Docker data if available
 	if dockerData, exists := integrationData["docker"]; exists && dockerData.Error == "" {
 		sendDockerData(httpClient, dockerData, hostname, machineID)
+	}
+
+	// Send Compliance data if available
+	if complianceData, exists := integrationData["compliance"]; exists && complianceData.Error == "" {
+		sendComplianceData(httpClient, complianceData, hostname, machineID)
 	}
 
 	// Future: Send other integration data here
@@ -374,4 +381,50 @@ func sendDockerData(httpClient *client.Client, integrationData *models.Integrati
 		"networks":   response.NetworksReceived,
 		"updates":    response.UpdatesFound,
 	}).Info("Docker data sent successfully")
+}
+
+// sendComplianceData sends compliance scan data to server
+func sendComplianceData(httpClient *client.Client, integrationData *models.IntegrationData, hostname, machineID string) {
+	// Extract Compliance data from integration data
+	complianceData, ok := integrationData.Data.(*models.ComplianceData)
+	if !ok {
+		logger.Warn("Failed to extract compliance data from integration")
+		return
+	}
+
+	if len(complianceData.Scans) == 0 {
+		logger.Debug("No compliance scans to send")
+		return
+	}
+
+	payload := &models.CompliancePayload{
+		ComplianceData: *complianceData,
+		Hostname:       hostname,
+		MachineID:      machineID,
+		AgentVersion:   version.Version,
+	}
+
+	totalRules := 0
+	for _, scan := range complianceData.Scans {
+		totalRules += scan.TotalRules
+	}
+
+	logger.WithFields(logrus.Fields{
+		"scans":       len(complianceData.Scans),
+		"total_rules": totalRules,
+	}).Info("Sending compliance data to server...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second) // Longer timeout for compliance
+	defer cancel()
+
+	response, err := httpClient.SendComplianceData(ctx, payload)
+	if err != nil {
+		logger.WithError(err).Warn("Failed to send compliance data (will retry on next report)")
+		return
+	}
+
+	logger.WithFields(logrus.Fields{
+		"scans_received": response.ScansReceived,
+		"message":        response.Message,
+	}).Info("Compliance data sent successfully")
 }

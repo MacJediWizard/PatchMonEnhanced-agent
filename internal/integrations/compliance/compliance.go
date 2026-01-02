@@ -1,0 +1,142 @@
+package compliance
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"patchmon-agent/internal/utils"
+	"patchmon-agent/pkg/models"
+
+	"github.com/sirupsen/logrus"
+)
+
+const integrationName = "compliance"
+
+// Integration implements the Integration interface for compliance scanning
+type Integration struct {
+	logger       *logrus.Logger
+	openscap     *OpenSCAPScanner
+	dockerBench  *DockerBenchScanner
+}
+
+// New creates a new Compliance integration
+func New(logger *logrus.Logger) *Integration {
+	return &Integration{
+		logger:      logger,
+		openscap:    NewOpenSCAPScanner(logger),
+		dockerBench: NewDockerBenchScanner(logger),
+	}
+}
+
+// Name returns the integration name
+func (c *Integration) Name() string {
+	return integrationName
+}
+
+// Priority returns the collection priority (lower = higher priority)
+func (c *Integration) Priority() int {
+	return 20 // Lower priority than docker (10) since scans can be slow
+}
+
+// SupportsRealtime indicates if this integration supports real-time monitoring
+func (c *Integration) SupportsRealtime() bool {
+	return false // Compliance scans are not real-time
+}
+
+// IsAvailable checks if compliance scanning is available on this system
+func (c *Integration) IsAvailable() bool {
+	// Available if either OpenSCAP or Docker Bench is available
+	oscapAvail := c.openscap.IsAvailable()
+	dockerBenchAvail := c.dockerBench.IsAvailable()
+
+	if oscapAvail {
+		c.logger.Debug("OpenSCAP is available for compliance scanning")
+	}
+	if dockerBenchAvail {
+		c.logger.Debug("Docker Bench is available for compliance scanning")
+	}
+
+	return oscapAvail || dockerBenchAvail
+}
+
+// Collect gathers compliance scan data
+func (c *Integration) Collect(ctx context.Context) (*models.IntegrationData, error) {
+	startTime := time.Now()
+
+	c.logger.Info("Starting compliance scan collection...")
+
+	complianceData := &models.ComplianceData{
+		Scans:   make([]models.ComplianceScan, 0),
+		OSInfo:  c.openscap.GetOSInfo(),
+		ScannerInfo: models.ComplianceScannerInfo{
+			OpenSCAPAvailable:    c.openscap.IsAvailable(),
+			OpenSCAPVersion:      c.openscap.GetVersion(),
+			DockerBenchAvailable: c.dockerBench.IsAvailable(),
+			AvailableProfiles:    c.openscap.GetAvailableProfiles(),
+		},
+	}
+
+	// Run OpenSCAP scan if available
+	if c.openscap.IsAvailable() {
+		c.logger.Info("Running OpenSCAP CIS benchmark scan...")
+		scan, err := c.openscap.RunScan(ctx, "level1_server")
+		if err != nil {
+			c.logger.WithError(err).Warn("OpenSCAP scan failed")
+			// Add failed scan result
+			complianceData.Scans = append(complianceData.Scans, models.ComplianceScan{
+				ProfileName: "level1_server",
+				ProfileType: "openscap",
+				Status:      "failed",
+				StartedAt:   startTime,
+				Error:       err.Error(),
+			})
+		} else {
+			complianceData.Scans = append(complianceData.Scans, *scan)
+			c.logger.WithFields(logrus.Fields{
+				"profile": scan.ProfileName,
+				"score":   fmt.Sprintf("%.1f%%", scan.Score),
+				"passed":  scan.Passed,
+				"failed":  scan.Failed,
+			}).Info("OpenSCAP scan completed")
+		}
+	}
+
+	// Run Docker Bench scan if available
+	if c.dockerBench.IsAvailable() {
+		c.logger.Info("Running Docker Bench for Security scan...")
+		scan, err := c.dockerBench.RunScan(ctx)
+		if err != nil {
+			c.logger.WithError(err).Warn("Docker Bench scan failed")
+			// Add failed scan result
+			now := time.Now()
+			complianceData.Scans = append(complianceData.Scans, models.ComplianceScan{
+				ProfileName: "docker-bench",
+				ProfileType: "docker-bench",
+				Status:      "failed",
+				StartedAt:   startTime,
+				CompletedAt: &now,
+				Error:       err.Error(),
+			})
+		} else {
+			complianceData.Scans = append(complianceData.Scans, *scan)
+			c.logger.WithFields(logrus.Fields{
+				"profile": scan.ProfileName,
+				"score":   fmt.Sprintf("%.1f%%", scan.Score),
+				"passed":  scan.Passed,
+				"failed":  scan.Failed,
+				"warnings": scan.Warnings,
+			}).Info("Docker Bench scan completed")
+		}
+	}
+
+	executionTime := time.Since(startTime).Seconds()
+
+	return &models.IntegrationData{
+		Name:          c.Name(),
+		Enabled:       true,
+		Data:          complianceData,
+		CollectedAt:   utils.GetCurrentTimeUTC(),
+		ExecutionTime: executionTime,
+	}, nil
+}

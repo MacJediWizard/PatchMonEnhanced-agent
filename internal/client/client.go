@@ -221,3 +221,38 @@ func (c *Client) SendDockerStatusEvent(event *models.DockerStatusEvent) error {
 	}).Debug("Docker status event")
 	return nil
 }
+
+// SendComplianceData sends compliance scan data to the server
+func (c *Client) SendComplianceData(ctx context.Context, payload *models.CompliancePayload) (*models.ComplianceResponse, error) {
+	url := fmt.Sprintf("%s/api/%s/compliance/scans", c.config.PatchmonServer, c.config.APIVersion)
+
+	c.logger.WithFields(logrus.Fields{
+		"url":    url,
+		"method": "POST",
+		"scans":  len(payload.Scans),
+	}).Debug("Sending compliance data to server")
+
+	resp, err := c.client.R().
+		SetContext(ctx).
+		SetHeader("Content-Type", "application/json").
+		SetHeader("X-API-ID", c.credentials.APIID).
+		SetHeader("X-API-KEY", c.credentials.APIKey).
+		SetBody(payload).
+		SetResult(&models.ComplianceResponse{}).
+		Post(url)
+
+	if err != nil {
+		return nil, fmt.Errorf("compliance data request failed: %w", err)
+	}
+
+	if resp.StatusCode() != 200 {
+		return nil, fmt.Errorf("compliance data request failed with status %d: %s", resp.StatusCode(), resp.String())
+	}
+
+	result, ok := resp.Result().(*models.ComplianceResponse)
+	if !ok {
+		return nil, fmt.Errorf("invalid response format")
+	}
+
+	return result, nil
+}
