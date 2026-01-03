@@ -167,20 +167,21 @@ func updateAgent() error {
 
 	// SECURITY: Verify binary integrity against server-provided hash
 	// This prevents supply chain attacks where binary could be tampered during download
-	if versionInfo != nil && versionInfo.Hash != "" {
-		actualHash := fmt.Sprintf("%x", sha256.Sum256(newAgentData))
-		if actualHash != versionInfo.Hash {
-			logger.WithFields(map[string]interface{}{
-				"expected": versionInfo.Hash,
-				"actual":   actualHash,
-			}).Error("Binary hash verification failed - possible tampering detected")
-			return fmt.Errorf("binary hash mismatch: expected %s, got %s", versionInfo.Hash, actualHash)
-		}
-		logger.WithField("hash", actualHash).Info("Binary integrity verified successfully")
-	} else {
-		// Warn if server didn't provide a hash (older server version)
-		logger.Warn("Server did not provide hash for binary verification - skipping integrity check (update server for better security)")
+	// SECURITY: Hash verification is MANDATORY for binary integrity
+	if versionInfo == nil || versionInfo.Hash == "" {
+		logger.Error("Server did not provide hash for binary verification - refusing to update")
+		return fmt.Errorf("binary hash not provided by server - refusing to update without integrity verification (update your PatchMon server)")
 	}
+
+	actualHash := fmt.Sprintf("%x", sha256.Sum256(newAgentData))
+	if actualHash != versionInfo.Hash {
+		logger.WithFields(map[string]interface{}{
+			"expected": versionInfo.Hash,
+			"actual":   actualHash,
+		}).Error("Binary hash verification failed - possible tampering detected")
+		return fmt.Errorf("binary hash mismatch: expected %s, got %s", versionInfo.Hash, actualHash)
+	}
+	logger.WithField("hash", actualHash).Info("Binary integrity verified successfully")
 
 	// Get the new version from server version info (more reliable than parsing binary output)
 	newVersion := currentVersion // Default to current if we can't determine
@@ -428,10 +429,20 @@ func getLatestBinaryFromServer() (*ServerVersionResponse, error) {
 		return nil, fmt.Errorf("server returned status %d", resp.StatusCode)
 	}
 
-	// Read the binary data
-	binaryData, err := io.ReadAll(resp.Body)
+	// SECURITY: Limit binary download size to prevent DoS attacks
+	// Max 100MB should be more than enough for the agent binary
+	const maxBinarySize = 100 * 1024 * 1024
+	limitedReader := io.LimitReader(resp.Body, maxBinarySize+1)
+
+	// Read the binary data with size limit
+	binaryData, err := io.ReadAll(limitedReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read binary data: %w", err)
+	}
+
+	// Check if we hit the size limit (read more than maxBinarySize)
+	if int64(len(binaryData)) > maxBinarySize {
+		return nil, fmt.Errorf("binary size exceeds maximum allowed (%d MB)", maxBinarySize/(1024*1024))
 	}
 
 	// Calculate hash

@@ -402,6 +402,9 @@ func connectOnce(out chan<- wsMsg, dockerEvents <-chan interface{}) error {
 		return conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 	})
 
+	// SECURITY: Limit WebSocket message size to prevent DoS attacks (64KB max)
+	conn.SetReadLimit(64 * 1024)
+
 	logger.WithField("url", wsURL).Info("WebSocket connected")
 
 	// Create a goroutine to send Docker events through WebSocket - with cancellation support
