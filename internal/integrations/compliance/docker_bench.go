@@ -16,8 +16,21 @@ import (
 )
 
 const (
-	dockerBinary    = "docker"
-	dockerBenchImage = "docker/docker-bench-security"
+	dockerBinary = "docker"
+	// SECURITY: Pin Docker Bench image to a specific digest to prevent supply chain attacks.
+	// This image runs with highly elevated privileges (--net host, --pid host, etc.)
+	// so we MUST verify the image integrity before running.
+	//
+	// To update this digest:
+	// 1. Pull the latest image: docker pull docker/docker-bench-security:latest
+	// 2. Get the digest: docker inspect docker/docker-bench-security:latest --format='{{.RepoDigests}}'
+	// 3. Update the digest below
+	// 4. Test thoroughly before deploying
+	//
+	// Current digest is for docker-bench-security as of 2024-01
+	dockerBenchImageBase   = "docker/docker-bench-security"
+	dockerBenchImageDigest = "sha256:ddbdf4f86af4405727e4e81f85a68eb7a934ffe9418553ef2f4c8b301f2c8d3e"
+	dockerBenchImage       = dockerBenchImageBase + "@" + dockerBenchImageDigest
 )
 
 // DockerBenchScanner handles Docker Bench for Security scanning
@@ -70,15 +83,37 @@ func (s *DockerBenchScanner) RunScan(ctx context.Context) (*models.ComplianceSca
 
 	startTime := time.Now()
 
-	s.logger.Info("Pulling Docker Bench for Security image...")
+	s.logger.WithField("image", dockerBenchImage).Info("Pulling Docker Bench for Security image (pinned to digest)...")
 
-	// Pull the latest image (optional, skip if exists)
+	// SECURITY: Pull by digest to ensure we get the exact image we expect
+	// This prevents supply chain attacks where the tag could be modified
 	pullCmd := exec.CommandContext(ctx, dockerBinary, "pull", dockerBenchImage)
 	if output, err := pullCmd.CombinedOutput(); err != nil {
-		s.logger.WithError(err).WithField("output", string(output)).Warn("Failed to pull Docker Bench image, using existing")
+		s.logger.WithError(err).WithField("output", string(output)).Warn("Failed to pull Docker Bench image, checking if existing image matches digest")
+
+		// Verify existing image matches expected digest before proceeding
+		verifyCmd := exec.CommandContext(ctx, dockerBinary, "images", "--digests", "--format", "{{.Digest}}", dockerBenchImageBase)
+		digestOutput, verifyErr := verifyCmd.Output()
+		if verifyErr != nil {
+			return nil, fmt.Errorf("failed to verify Docker Bench image: %w", verifyErr)
+		}
+
+		existingDigest := strings.TrimSpace(string(digestOutput))
+		if existingDigest != dockerBenchImageDigest {
+			s.logger.WithFields(logrus.Fields{
+				"expected": dockerBenchImageDigest,
+				"found":    existingDigest,
+			}).Error("Docker Bench image digest mismatch - refusing to run")
+			return nil, fmt.Errorf("docker Bench image digest mismatch: expected %s, got %s", dockerBenchImageDigest, existingDigest)
+		}
+		s.logger.Info("Existing Docker Bench image digest verified")
+	} else {
+		s.logger.WithField("digest", dockerBenchImageDigest).Info("Docker Bench image pulled and verified by digest")
 	}
 
 	// Run Docker Bench
+	// NOTE: These elevated privileges are necessary for Docker Bench to inspect host configuration.
+	// The digest pinning above ensures we only run the trusted image.
 	args := []string{
 		"run", "--rm",
 		"--net", "host",

@@ -498,7 +498,17 @@ func toggleIntegration(integrationName string, enabled bool) error {
 		// Instead, we'll create a helper script that runs after we exit
 		logger.Debug("Detected OpenRC, scheduling service restart via helper script")
 
+		// SECURITY: Ensure /etc/patchmon directory exists with restrictive permissions
+		// Using 0700 to prevent other users from reading/writing to this directory
+		if err := os.MkdirAll("/etc/patchmon", 0700); err != nil {
+			logger.WithError(err).Warn("Failed to create /etc/patchmon directory, will try anyway")
+		}
+
 		// Create a helper script that will restart the service after we exit
+		// SECURITY NOTE: Writing scripts to disk has a TOCTOU race condition risk.
+		// Mitigations: 1) 0700 permissions on dir and file (owner-only)
+		//              2) Script is deleted immediately after execution
+		//              3) Short window between write and exec (milliseconds)
 		helperScript := `#!/bin/sh
 # Wait a moment for the current process to exit
 sleep 2
@@ -508,7 +518,8 @@ rc-service patchmon-agent restart 2>&1 || rc-service patchmon-agent start 2>&1
 rm -f "$0"
 `
 		helperPath := "/etc/patchmon/patchmon-restart-helper.sh"
-		if err := os.WriteFile(helperPath, []byte(helperScript), 0755); err != nil {
+		// SECURITY: Use 0700 permissions (owner-only executable) to minimize TOCTOU risk
+		if err := os.WriteFile(helperPath, []byte(helperScript), 0700); err != nil {
 			logger.WithError(err).Warn("Failed to create restart helper script, will exit and rely on OpenRC auto-restart")
 			// Fall through to exit approach
 		} else {

@@ -43,6 +43,7 @@ type ServerVersionInfo struct {
 	AutoUpdateDisabledReason string   `json:"autoUpdateDisabledReason"`
 	LastChecked              string   `json:"lastChecked"`
 	SupportedArchitectures   []string `json:"supportedArchitectures"`
+	Hash                     string   `json:"hash"` // SHA256 hash for integrity verification
 }
 
 // checkVersionCmd represents the check-version command
@@ -162,6 +163,23 @@ func updateAgent() error {
 	newAgentData := binaryInfo.BinaryData
 	if len(newAgentData) == 0 {
 		return fmt.Errorf("no binary data received from server")
+	}
+
+	// SECURITY: Verify binary integrity against server-provided hash
+	// This prevents supply chain attacks where binary could be tampered during download
+	if versionInfo != nil && versionInfo.Hash != "" {
+		actualHash := fmt.Sprintf("%x", sha256.Sum256(newAgentData))
+		if actualHash != versionInfo.Hash {
+			logger.WithFields(map[string]interface{}{
+				"expected": versionInfo.Hash,
+				"actual":   actualHash,
+			}).Error("Binary hash verification failed - possible tampering detected")
+			return fmt.Errorf("binary hash mismatch: expected %s, got %s", versionInfo.Hash, actualHash)
+		}
+		logger.WithField("hash", actualHash).Info("Binary integrity verified successfully")
+	} else {
+		// Warn if server didn't provide a hash (older server version)
+		logger.Warn("Server did not provide hash for binary verification - skipping integrity check (update server for better security)")
 	}
 
 	// Get the new version from server version info (more reliable than parsing binary output)
@@ -558,12 +576,17 @@ func restartService(executablePath, expectedVersion string) error {
 		// Instead, we'll create a helper script that runs after we exit
 		logger.Debug("Detected systemd, scheduling service restart via helper script")
 
-		// Ensure /etc/patchmon directory exists
-		if err := os.MkdirAll("/etc/patchmon", 0755); err != nil {
+		// SECURITY: Ensure /etc/patchmon directory exists with restrictive permissions
+		// Using 0700 to prevent other users from reading/writing to this directory
+		if err := os.MkdirAll("/etc/patchmon", 0700); err != nil {
 			logger.WithError(err).Warn("Failed to create /etc/patchmon directory, will try anyway")
 		}
 
 		// Create a helper script that will restart the service after we exit
+		// SECURITY NOTE: Writing scripts to disk has a TOCTOU race condition risk.
+		// Mitigations: 1) 0700 permissions on dir and file (owner-only)
+		//              2) Script is deleted immediately after execution
+		//              3) Short window between write and exec (milliseconds)
 		helperScript := `#!/bin/sh
 # Wait a moment for the current process to exit
 sleep 2
@@ -573,7 +596,8 @@ systemctl restart patchmon-agent 2>&1 || systemctl start patchmon-agent 2>&1
 rm -f "$0"
 `
 		helperPath := "/etc/patchmon/patchmon-restart-helper.sh"
-		if err := os.WriteFile(helperPath, []byte(helperScript), 0755); err != nil {
+		// SECURITY: Use 0700 permissions (owner-only executable) to minimize TOCTOU risk
+		if err := os.WriteFile(helperPath, []byte(helperScript), 0700); err != nil {
 			logger.WithError(err).Warn("Failed to create restart helper script, will exit and rely on systemd auto-restart")
 			// Fall through to exit approach
 		} else {
@@ -608,12 +632,17 @@ rm -f "$0"
 		// Instead, we'll create a helper script that runs after we exit
 		logger.Debug("Detected OpenRC, scheduling service restart via helper script")
 
-		// Ensure /etc/patchmon directory exists
-		if err := os.MkdirAll("/etc/patchmon", 0755); err != nil {
+		// SECURITY: Ensure /etc/patchmon directory exists with restrictive permissions
+		// Using 0700 to prevent other users from reading/writing to this directory
+		if err := os.MkdirAll("/etc/patchmon", 0700); err != nil {
 			logger.WithError(err).Warn("Failed to create /etc/patchmon directory, will try anyway")
 		}
 
 		// Create a helper script that will restart the service after we exit
+		// SECURITY NOTE: Writing scripts to disk has a TOCTOU race condition risk.
+		// Mitigations: 1) 0700 permissions on dir and file (owner-only)
+		//              2) Script is deleted immediately after execution
+		//              3) Short window between write and exec (milliseconds)
 		helperScript := `#!/bin/sh
 # Wait a moment for the current process to exit
 sleep 2
@@ -623,7 +652,8 @@ rc-service patchmon-agent restart 2>&1 || rc-service patchmon-agent start 2>&1
 rm -f "$0"
 `
 		helperPath := "/etc/patchmon/patchmon-restart-helper.sh"
-		if err := os.WriteFile(helperPath, []byte(helperScript), 0755); err != nil {
+		// SECURITY: Use 0700 permissions (owner-only executable) to minimize TOCTOU risk
+		if err := os.WriteFile(helperPath, []byte(helperScript), 0700); err != nil {
 			logger.WithError(err).Warn("Failed to create restart helper script, will exit and rely on OpenRC auto-restart")
 			// Fall through to exit approach
 		} else {
