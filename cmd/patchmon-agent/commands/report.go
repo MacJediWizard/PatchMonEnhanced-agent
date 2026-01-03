@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"patchmon-agent/internal/client"
@@ -242,13 +243,27 @@ func sendReport(outputJson bool) error {
 			return nil
 		}
 	} else {
-		// Proactive update check after report (non-blocking with timeout)
-		// Run in a goroutine to avoid blocking the report completion
+		// Proactive update check after report (with timeout to prevent hanging)
+		// Use a WaitGroup to ensure the goroutine completes before function returns
+		var wg sync.WaitGroup
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
+
+			// Create a context with timeout to prevent indefinite hanging
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+
 			// Add a delay to prevent immediate checks after service restart
 			// This gives the new process time to fully initialize
-			time.Sleep(5 * time.Second)
-			
+			select {
+			case <-time.After(5 * time.Second):
+				// Continue with update check
+			case <-ctx.Done():
+				logger.Debug("Update check cancelled due to timeout")
+				return
+			}
+
 			logger.Info("Checking for agent updates...")
 			versionInfo, err := getServerVersionInfo()
 			if err != nil {
@@ -278,6 +293,8 @@ func sendReport(outputJson bool) error {
 				logger.WithField("version", versionInfo.CurrentVersion).Info("Agent is up to date")
 			}
 		}()
+		// Wait for the update check to complete (with the internal timeout)
+		wg.Wait()
 	}
 
 	// Collect and send integration data (Docker, etc.) separately

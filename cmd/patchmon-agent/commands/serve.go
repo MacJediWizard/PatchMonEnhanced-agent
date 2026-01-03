@@ -352,29 +352,47 @@ func connectOnce(out chan<- wsMsg, dockerEvents <-chan interface{}) error {
 	header.Set("X-API-ID", apiID)
 	header.Set("X-API-KEY", apiKey)
 
-	// Configure WebSocket dialer for insecure connections if needed
+	// SECURITY: Configure WebSocket dialer for insecure connections if needed
+	// WARNING: This exposes the agent to man-in-the-middle attacks!
 	dialer := websocket.DefaultDialer
 	if cfgManager.GetConfig().SkipSSLVerify {
+		logger.Error("╔══════════════════════════════════════════════════════════════════╗")
+		logger.Error("║  SECURITY WARNING: TLS verification DISABLED for WebSocket!      ║")
+		logger.Error("║  Commands from server could be intercepted or modified.          ║")
+		logger.Error("║  Use a valid TLS certificate in production!                      ║")
+		logger.Error("╚══════════════════════════════════════════════════════════════════╝")
 		dialer = &websocket.Dialer{
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true,
 			},
 		}
-		logger.Warn("⚠️  SSL certificate verification is disabled for WebSocket")
 	}
 
 	conn, _, err := dialer.Dial(wsURL, header)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = conn.Close() }()
 
-	// ping loop
+	// Create a done channel to signal goroutines to stop when connection closes
+	done := make(chan struct{})
+	defer func() {
+		close(done) // Signal all goroutines to stop
+		_ = conn.Close()
+	}()
+
+	// ping loop - now with cancellation support
 	go func() {
 		t := time.NewTicker(30 * time.Second)
 		defer t.Stop()
-		for range t.C {
-			_ = conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second))
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)); err != nil {
+					return // Connection closed, exit goroutine
+				}
+			}
 		}
 	}()
 
@@ -386,26 +404,34 @@ func connectOnce(out chan<- wsMsg, dockerEvents <-chan interface{}) error {
 
 	logger.WithField("url", wsURL).Info("WebSocket connected")
 
-	// Create a goroutine to send Docker events through WebSocket
+	// Create a goroutine to send Docker events through WebSocket - with cancellation support
 	go func() {
-		for event := range dockerEvents {
-			if dockerEvent, ok := event.(models.DockerStatusEvent); ok {
-				eventJSON, err := json.Marshal(map[string]interface{}{
-					"type":         "docker_status",
-					"event":        dockerEvent,
-					"container_id": dockerEvent.ContainerID,
-					"name":         dockerEvent.Name,
-					"status":       dockerEvent.Status,
-					"timestamp":    dockerEvent.Timestamp,
-				})
-				if err != nil {
-					logger.WithError(err).Warn("Failed to marshal Docker event")
-					continue
+		for {
+			select {
+			case <-done:
+				return
+			case event, ok := <-dockerEvents:
+				if !ok {
+					return // Channel closed
 				}
+				if dockerEvent, ok := event.(models.DockerStatusEvent); ok {
+					eventJSON, err := json.Marshal(map[string]interface{}{
+						"type":         "docker_status",
+						"event":        dockerEvent,
+						"container_id": dockerEvent.ContainerID,
+						"name":         dockerEvent.Name,
+						"status":       dockerEvent.Status,
+						"timestamp":    dockerEvent.Timestamp,
+					})
+					if err != nil {
+						logger.WithError(err).Warn("Failed to marshal Docker event")
+						continue
+					}
 
-				if err := conn.WriteMessage(websocket.TextMessage, eventJSON); err != nil {
-					logger.WithError(err).Debug("Failed to send Docker event via WebSocket")
-					return
+					if err := conn.WriteMessage(websocket.TextMessage, eventJSON); err != nil {
+						logger.WithError(err).Debug("Failed to send Docker event via WebSocket")
+						return
+					}
 				}
 			}
 		}

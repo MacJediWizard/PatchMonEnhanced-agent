@@ -329,8 +329,10 @@ func getServerVersionInfo() (*ServerVersionInfo, error) {
 		},
 	}
 
-	// Configure for insecure SSL if needed
+	// SECURITY: Configure for insecure SSL if needed (NOT RECOMMENDED)
+	// Even with hash verification, TLS provides important protections
 	if cfg.SkipSSLVerify {
+		logger.Warn("⚠️  TLS verification disabled for version check - NOT RECOMMENDED")
 		httpClient.Transport = &http.Transport{
 			ResponseHeaderTimeout: 5 * time.Second,
 			TLSClientConfig: &tls.Config{
@@ -390,10 +392,19 @@ func getLatestBinaryFromServer() (*ServerVersionResponse, error) {
 	req.Header.Set("X-API-ID", credentials.APIID)
 	req.Header.Set("X-API-KEY", credentials.APIKey)
 
-	// Configure HTTP client for insecure SSL if needed
+	// SECURITY: Configure HTTP client for insecure SSL if needed
+	// WARNING: This is dangerous for binary downloads even with hash verification!
+	// An attacker could provide both a malicious binary AND a matching hash.
+	// TLS ensures we're talking to the legitimate server.
 	httpClient := http.DefaultClient
 	if cfg.SkipSSLVerify {
-		logger.Warn("⚠️  SSL certificate verification is disabled for binary download")
+		logger.Error("╔══════════════════════════════════════════════════════════════════╗")
+		logger.Error("║  CRITICAL: TLS verification DISABLED for binary download!        ║")
+		logger.Error("║  This is a severe security risk - MITM attacks are possible.     ║")
+		logger.Error("║  Hash verification provides some protection, but TLS ensures     ║")
+		logger.Error("║  you're communicating with the legitimate server.                ║")
+		logger.Error("║  Use a valid TLS certificate in production!                      ║")
+		logger.Error("╚══════════════════════════════════════════════════════════════════╝")
 		httpClient = &http.Client{
 			Transport: &http.Transport{
 				TLSClientConfig: &tls.Config{
@@ -448,7 +459,8 @@ func copyFile(src, dst string) error {
 		return err
 	}
 
-	return os.WriteFile(dst, data, 0755)
+	// SECURITY: Use 0700 for backup files (owner-only access)
+	return os.WriteFile(dst, data, 0700)
 }
 
 // cleanupOldBackups removes old backup files, keeping only the last 3
@@ -541,8 +553,8 @@ func checkRecentUpdate() error {
 func markRecentUpdate() {
 	updateMarkerPath := "/etc/patchmon/.last_update_timestamp"
 
-	// Ensure directory exists
-	if err := os.MkdirAll("/etc/patchmon", 0755); err != nil {
+	// SECURITY: Ensure directory exists with restrictive permissions
+	if err := os.MkdirAll("/etc/patchmon", 0700); err != nil {
 		logger.WithError(err).Debug("Could not create /etc/patchmon directory (non-critical)")
 		return
 	}

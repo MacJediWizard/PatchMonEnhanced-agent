@@ -87,7 +87,8 @@ func initialiseAgent() {
 	if logFile == "" {
 		logFile = config.DefaultLogFile
 	}
-	_ = os.MkdirAll(filepath.Dir(logFile), 0755)
+	// SECURITY: Use 0750 for log directory (no world access)
+	_ = os.MkdirAll(filepath.Dir(logFile), 0750)
 	logger.SetOutput(&lumberjack.Logger{Filename: logFile, MaxSize: 10, MaxBackups: 5, MaxAge: 14, Compress: true})
 }
 

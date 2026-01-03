@@ -243,6 +243,8 @@ func (m *Manager) SetIntegrationEnabled(name string, enabled bool) error {
 }
 
 // setupDirectories creates necessary directories
+// SECURITY: Use restrictive permissions (0750) for config directories
+// This prevents unauthorized users from reading agent configuration
 func (m *Manager) setupDirectories() error {
 	dirs := []string{
 		filepath.Dir(m.configFile),
@@ -251,7 +253,8 @@ func (m *Manager) setupDirectories() error {
 	}
 
 	for _, dir := range dirs {
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		// Use 0750 - owner full access, group read/execute, no world access
+		if err := os.MkdirAll(dir, 0750); err != nil {
 			return fmt.Errorf("error creating directory %s: %w", dir, err)
 		}
 	}

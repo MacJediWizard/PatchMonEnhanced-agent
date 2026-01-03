@@ -21,6 +21,16 @@ type Client struct {
 	logger      *logrus.Logger
 }
 
+// truncateResponse truncates a response string to prevent leaking sensitive data in logs
+// SECURITY: Error messages should not include full response bodies which may contain
+// sensitive information like tokens, internal paths, or system details
+func truncateResponse(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "... (truncated)"
+}
+
 // New creates a new HTTP client
 func New(configMgr *config.Manager, logger *logrus.Logger) *Client {
 	client := resty.New()
@@ -32,9 +42,15 @@ func New(configMgr *config.Manager, logger *logrus.Logger) *Client {
 	client.SetLogger(logger)
 
 	// Configure TLS based on skip_ssl_verify setting
+	// SECURITY WARNING: Disabling TLS verification exposes the agent to MITM attacks
 	cfg := configMgr.GetConfig()
 	if cfg.SkipSSLVerify {
-		logger.Warn("⚠️  SSL certificate verification is disabled (skip_ssl_verify=true)")
+		logger.Error("╔══════════════════════════════════════════════════════════════════╗")
+		logger.Error("║  SECURITY WARNING: TLS certificate verification is DISABLED!     ║")
+		logger.Error("║  This exposes the agent to man-in-the-middle attacks.            ║")
+		logger.Error("║  An attacker could intercept and modify communications.          ║")
+		logger.Error("║  Do NOT use skip_ssl_verify=true in production environments!     ║")
+		logger.Error("╚══════════════════════════════════════════════════════════════════╝")
 		client.SetTLSClientConfig(&tls.Config{
 			InsecureSkipVerify: true,
 		})
@@ -70,7 +86,8 @@ func (c *Client) Ping(ctx context.Context) (*models.PingResponse, error) {
 	}
 
 	if resp.StatusCode() != 200 {
-		return nil, fmt.Errorf("ping request failed with status %d: %s", resp.StatusCode(), resp.String())
+		c.logger.WithField("response", resp.String()).Debug("Full error response from ping request")
+		return nil, fmt.Errorf("ping request failed with status %d: %s", resp.StatusCode(), truncateResponse(resp.String(), 200))
 	}
 
 	result, ok := resp.Result().(*models.PingResponse)
@@ -104,7 +121,8 @@ func (c *Client) SendUpdate(ctx context.Context, payload *models.ReportPayload) 
 	}
 
 	if resp.StatusCode() != 200 {
-		return nil, fmt.Errorf("update request failed with status %d: %s", resp.StatusCode(), resp.String())
+		c.logger.WithField("response", resp.String()).Debug("Full error response from update request")
+		return nil, fmt.Errorf("update request failed with status %d: %s", resp.StatusCode(), truncateResponse(resp.String(), 200))
 	}
 
 	result, ok := resp.Result().(*models.UpdateResponse)
@@ -134,7 +152,8 @@ func (c *Client) GetUpdateInterval(ctx context.Context) (*models.UpdateIntervalR
 	}
 
 	if resp.StatusCode() != 200 {
-		return nil, fmt.Errorf("update interval request failed with status %d: %s", resp.StatusCode(), resp.String())
+		c.logger.WithField("response", resp.String()).Debug("Full error response from update interval request")
+		return nil, fmt.Errorf("update interval request failed with status %d: %s", resp.StatusCode(), truncateResponse(resp.String(), 200))
 	}
 
 	result, ok := resp.Result().(*models.UpdateIntervalResponse)
@@ -168,7 +187,8 @@ func (c *Client) SendDockerData(ctx context.Context, payload *models.DockerPaylo
 	}
 
 	if resp.StatusCode() != 200 {
-		return nil, fmt.Errorf("docker data request failed with status %d: %s", resp.StatusCode(), resp.String())
+		c.logger.WithField("response", resp.String()).Debug("Full error response from docker data request")
+		return nil, fmt.Errorf("docker data request failed with status %d: %s", resp.StatusCode(), truncateResponse(resp.String(), 200))
 	}
 
 	result, ok := resp.Result().(*models.DockerResponse)
@@ -198,7 +218,8 @@ func (c *Client) GetIntegrationStatus(ctx context.Context) (*models.IntegrationS
 	}
 
 	if resp.StatusCode() != 200 {
-		return nil, fmt.Errorf("integration status request failed with status %d: %s", resp.StatusCode(), resp.String())
+		c.logger.WithField("response", resp.String()).Debug("Full error response from integration status request")
+		return nil, fmt.Errorf("integration status request failed with status %d: %s", resp.StatusCode(), truncateResponse(resp.String(), 200))
 	}
 
 	result, ok := resp.Result().(*models.IntegrationStatusResponse)
@@ -246,7 +267,8 @@ func (c *Client) SendComplianceData(ctx context.Context, payload *models.Complia
 	}
 
 	if resp.StatusCode() != 200 {
-		return nil, fmt.Errorf("compliance data request failed with status %d: %s", resp.StatusCode(), resp.String())
+		c.logger.WithField("response", resp.String()).Debug("Full error response from compliance data request")
+		return nil, fmt.Errorf("compliance data request failed with status %d: %s", resp.StatusCode(), truncateResponse(resp.String(), 200))
 	}
 
 	result, ok := resp.Result().(*models.ComplianceResponse)
