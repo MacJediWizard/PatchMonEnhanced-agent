@@ -14,11 +14,14 @@ type ComplianceRule struct {
 
 // ComplianceResult represents a single rule evaluation result
 type ComplianceResult struct {
-	RuleID  string `json:"rule_id"`
-	Title   string `json:"title"`
-	Status  string `json:"status"` // pass, fail, warn, skip, notapplicable, error
-	Finding string `json:"finding,omitempty"`
-	Section string `json:"section,omitempty"`
+	RuleID      string `json:"rule_ref"` // Backend expects rule_ref, not rule_id
+	Title       string `json:"title"`
+	Status      string `json:"status"` // pass, fail, warn, skip, notapplicable, error
+	Finding     string `json:"finding,omitempty"`
+	Section     string `json:"section,omitempty"`
+	Description string `json:"description,omitempty"`
+	Severity    string `json:"severity,omitempty"`
+	Remediation string `json:"remediation,omitempty"`
 }
 
 // ComplianceScan represents results of a compliance scan

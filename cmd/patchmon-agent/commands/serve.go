@@ -13,8 +13,11 @@ import (
 
 	"patchmon-agent/internal/client"
 	"patchmon-agent/internal/integrations"
+	"patchmon-agent/internal/integrations/compliance"
 	"patchmon-agent/internal/integrations/docker"
+	"patchmon-agent/internal/system"
 	"patchmon-agent/internal/utils"
+	"patchmon-agent/internal/version"
 	"patchmon-agent/pkg/models"
 
 	"github.com/gorilla/websocket"
@@ -264,6 +267,15 @@ func runService() error {
 						"enabled":     m.integrationEnabled,
 					}).Info("Integration toggled successfully, service will restart")
 				}
+			case "compliance_scan":
+				logger.WithField("profile_type", m.profileType).Info("Running on-demand compliance scan...")
+				go func(profileType string) {
+					if err := runComplianceScan(profileType); err != nil {
+						logger.WithError(err).Warn("compliance_scan failed")
+					} else {
+						logger.Info("On-demand compliance scan completed successfully")
+					}
+				}(m.profileType)
 			}
 		}
 	}
@@ -304,6 +316,7 @@ type wsMsg struct {
 	force              bool
 	integrationName    string
 	integrationEnabled bool
+	profileType        string // For compliance_scan: openscap, docker-bench, all
 }
 
 func wsLoop(out chan<- wsMsg, dockerEvents <-chan interface{}) {
@@ -463,6 +476,7 @@ func connectOnce(out chan<- wsMsg, dockerEvents <-chan interface{}) error {
 			Message        string `json:"message"`
 			Integration    string `json:"integration"`
 			Enabled        bool   `json:"enabled"`
+			ProfileType    string `json:"profile_type"` // For compliance_scan
 		}
 		if json.Unmarshal(data, &payload) == nil {
 			switch payload.Type {
@@ -495,6 +509,16 @@ func connectOnce(out chan<- wsMsg, dockerEvents <-chan interface{}) error {
 					kind:               "integration_toggle",
 					integrationName:    payload.Integration,
 					integrationEnabled: payload.Enabled,
+				}
+			case "compliance_scan":
+				profileType := payload.ProfileType
+				if profileType == "" {
+					profileType = "all"
+				}
+				logger.WithField("profile_type", profileType).Info("compliance_scan received")
+				out <- wsMsg{
+					kind:        "compliance_scan",
+					profileType: profileType,
 				}
 			}
 		}
@@ -598,4 +622,66 @@ rm -f "$0"
 		logger.Info("Sent HUP signal to agent process")
 		return nil
 	}
+}
+
+// runComplianceScan runs an on-demand compliance scan and sends results to server
+func runComplianceScan(profileType string) error {
+	logger.WithField("profile_type", profileType).Info("Starting on-demand compliance scan")
+
+	// Create compliance integration
+	complianceInteg := compliance.New(logger)
+
+	if !complianceInteg.IsAvailable() {
+		return fmt.Errorf("compliance scanning not available on this system")
+	}
+
+	// Run the scan
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	integrationData, err := complianceInteg.Collect(ctx)
+	if err != nil {
+		return fmt.Errorf("compliance scan failed: %w", err)
+	}
+
+	// Extract compliance data
+	complianceData, ok := integrationData.Data.(*models.ComplianceData)
+	if !ok {
+		return fmt.Errorf("failed to extract compliance data")
+	}
+
+	if len(complianceData.Scans) == 0 {
+		logger.Info("No compliance scans to send")
+		return nil
+	}
+
+	// Get system info
+	systemDetector := system.New(logger)
+	hostname, _ := systemDetector.GetHostname()
+	machineID := systemDetector.GetMachineID()
+
+	// Create payload
+	payload := &models.CompliancePayload{
+		ComplianceData: *complianceData,
+		Hostname:       hostname,
+		MachineID:      machineID,
+		AgentVersion:   version.Version,
+	}
+
+	// Send to server
+	httpClient := client.New(cfgManager, logger)
+	sendCtx, sendCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer sendCancel()
+
+	response, err := httpClient.SendComplianceData(sendCtx, payload)
+	if err != nil {
+		return fmt.Errorf("failed to send compliance data: %w", err)
+	}
+
+	logger.WithFields(map[string]interface{}{
+		"scans_received": response.ScansReceived,
+		"message":        response.Message,
+	}).Info("On-demand compliance scan results sent to server")
+
+	return nil
 }
