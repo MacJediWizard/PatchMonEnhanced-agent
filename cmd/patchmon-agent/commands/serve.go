@@ -356,6 +356,16 @@ func connectOnce(out chan<- wsMsg, dockerEvents <-chan interface{}) error {
 	// WARNING: This exposes the agent to man-in-the-middle attacks!
 	dialer := websocket.DefaultDialer
 	if cfgManager.GetConfig().SkipSSLVerify {
+		// SECURITY: Block skip_ssl_verify in production environments
+		if utils.IsProductionEnvironment() {
+			logger.Error("╔══════════════════════════════════════════════════════════════════╗")
+			logger.Error("║  SECURITY ERROR: skip_ssl_verify is BLOCKED in production!       ║")
+			logger.Error("║  Set PATCHMON_ENV to 'development' to enable insecure mode.      ║")
+			logger.Error("║  This setting cannot be used when PATCHMON_ENV=production        ║")
+			logger.Error("╚══════════════════════════════════════════════════════════════════╝")
+			logger.Fatal("Refusing to start with skip_ssl_verify=true in production environment")
+		}
+
 		logger.Error("╔══════════════════════════════════════════════════════════════════╗")
 		logger.Error("║  SECURITY WARNING: TLS verification DISABLED for WebSocket!      ║")
 		logger.Error("║  Commands from server could be intercepted or modified.          ║")

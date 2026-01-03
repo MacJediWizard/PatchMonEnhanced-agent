@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"patchmon-agent/internal/config"
+	"patchmon-agent/internal/utils"
 	"patchmon-agent/pkg/models"
 
 	"github.com/go-resty/resty/v2"
@@ -45,6 +46,16 @@ func New(configMgr *config.Manager, logger *logrus.Logger) *Client {
 	// SECURITY WARNING: Disabling TLS verification exposes the agent to MITM attacks
 	cfg := configMgr.GetConfig()
 	if cfg.SkipSSLVerify {
+		// SECURITY: Block skip_ssl_verify in production environments
+		if utils.IsProductionEnvironment() {
+			logger.Error("╔══════════════════════════════════════════════════════════════════╗")
+			logger.Error("║  SECURITY ERROR: skip_ssl_verify is BLOCKED in production!       ║")
+			logger.Error("║  Set PATCHMON_ENV to 'development' to enable insecure mode.      ║")
+			logger.Error("║  This setting cannot be used when PATCHMON_ENV=production        ║")
+			logger.Error("╚══════════════════════════════════════════════════════════════════╝")
+			logger.Fatal("Refusing to start with skip_ssl_verify=true in production environment")
+		}
+
 		logger.Error("╔══════════════════════════════════════════════════════════════════╗")
 		logger.Error("║  SECURITY WARNING: TLS certificate verification is DISABLED!     ║")
 		logger.Error("║  This exposes the agent to man-in-the-middle attacks.            ║")

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"patchmon-agent/internal/config"
+	"patchmon-agent/internal/utils"
 	"patchmon-agent/internal/version"
 
 	"github.com/spf13/cobra"
@@ -333,6 +334,16 @@ func getServerVersionInfo() (*ServerVersionInfo, error) {
 	// SECURITY: Configure for insecure SSL if needed (NOT RECOMMENDED)
 	// Even with hash verification, TLS provides important protections
 	if cfg.SkipSSLVerify {
+		// SECURITY: Block skip_ssl_verify in production environments
+		if utils.IsProductionEnvironment() {
+			logger.Error("╔══════════════════════════════════════════════════════════════════╗")
+			logger.Error("║  SECURITY ERROR: skip_ssl_verify is BLOCKED in production!       ║")
+			logger.Error("║  Set PATCHMON_ENV to 'development' to enable insecure mode.      ║")
+			logger.Error("║  This setting cannot be used when PATCHMON_ENV=production        ║")
+			logger.Error("╚══════════════════════════════════════════════════════════════════╝")
+			return nil, fmt.Errorf("skip_ssl_verify is blocked in production environment")
+		}
+
 		logger.Warn("⚠️  TLS verification disabled for version check - NOT RECOMMENDED")
 		httpClient.Transport = &http.Transport{
 			ResponseHeaderTimeout: 5 * time.Second,
@@ -399,6 +410,16 @@ func getLatestBinaryFromServer() (*ServerVersionResponse, error) {
 	// TLS ensures we're talking to the legitimate server.
 	httpClient := http.DefaultClient
 	if cfg.SkipSSLVerify {
+		// SECURITY: Block skip_ssl_verify in production environments
+		if utils.IsProductionEnvironment() {
+			logger.Error("╔══════════════════════════════════════════════════════════════════╗")
+			logger.Error("║  SECURITY ERROR: skip_ssl_verify is BLOCKED in production!       ║")
+			logger.Error("║  Set PATCHMON_ENV to 'development' to enable insecure mode.      ║")
+			logger.Error("║  This setting cannot be used when PATCHMON_ENV=production        ║")
+			logger.Error("╚══════════════════════════════════════════════════════════════════╝")
+			return nil, fmt.Errorf("skip_ssl_verify is blocked in production environment")
+		}
+
 		logger.Error("╔══════════════════════════════════════════════════════════════════╗")
 		logger.Error("║  CRITICAL: TLS verification DISABLED for binary download!        ║")
 		logger.Error("║  This is a severe security risk - MITM attacks are possible.     ║")
