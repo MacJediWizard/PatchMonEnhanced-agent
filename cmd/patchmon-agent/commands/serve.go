@@ -498,6 +498,7 @@ func connectOnce(out chan<- wsMsg, dockerEvents <-chan interface{}) error {
 		if err != nil {
 			return err
 		}
+		logger.WithField("raw_message", string(data)).Debug("WebSocket message received")
 		var payload struct {
 			Type                 string `json:"type"`
 			UpdateInterval       int    `json:"update_interval"`
@@ -510,8 +511,12 @@ func connectOnce(out chan<- wsMsg, dockerEvents <-chan interface{}) error {
 			EnableRemediation    bool   `json:"enable_remediation"`     // For compliance_scan
 			FetchRemoteResources bool   `json:"fetch_remote_resources"` // For compliance_scan
 		}
-		if json.Unmarshal(data, &payload) == nil {
-			switch payload.Type {
+		if err := json.Unmarshal(data, &payload); err != nil {
+			logger.WithError(err).WithField("data", string(data)).Warn("Failed to parse WebSocket message")
+			continue
+		}
+		logger.WithField("type", payload.Type).Debug("Parsed WebSocket message type")
+		switch payload.Type {
 			case "settings_update":
 				logger.WithField("interval", payload.UpdateInterval).Info("settings_update received")
 				out <- wsMsg{kind: "settings_update", interval: payload.UpdateInterval}
@@ -558,10 +563,14 @@ func connectOnce(out chan<- wsMsg, dockerEvents <-chan interface{}) error {
 					fetchRemoteResources: payload.FetchRemoteResources,
 				}
 			case "upgrade_ssg":
-				logger.Info("upgrade_ssg received")
+				logger.Info("upgrade_ssg received from WebSocket")
 				out <- wsMsg{kind: "upgrade_ssg"}
+				logger.Info("upgrade_ssg sent to message channel")
+			default:
+				if payload.Type != "" && payload.Type != "connected" {
+					logger.WithField("type", payload.Type).Warn("Unknown WebSocket message type")
+				}
 			}
-		}
 	}
 }
 
