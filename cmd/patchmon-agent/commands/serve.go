@@ -595,7 +595,7 @@ func toggleIntegration(integrationName string, enabled bool) error {
 			}
 
 		} else {
-			logger.Info("Compliance disabled - cleaning up tools...")
+			logger.Info("Compliance disabled - removing tools...")
 			overallStatus = "removing"
 
 			// Send initial "removing" status
@@ -606,8 +606,17 @@ func toggleIntegration(integrationName string, enabled bool) error {
 				Message:     "Removing compliance tools...",
 			})
 
-			// Cleanup is optional - don't remove packages as they may be used by other software
-			// Only clean up Docker images which are specific to compliance scanning
+			// Remove OpenSCAP packages
+			openscapScanner := compliance.NewOpenSCAPScanner(logger)
+			if err := openscapScanner.Cleanup(); err != nil {
+				logger.WithError(err).Warn("Failed to remove OpenSCAP packages")
+				components["openscap"] = "cleanup-failed"
+			} else {
+				logger.Info("OpenSCAP packages removed successfully")
+				components["openscap"] = "removed"
+			}
+
+			// Clean up Docker Bench images
 			dockerBenchScanner := compliance.NewDockerBenchScanner(logger)
 			if dockerBenchScanner.IsAvailable() {
 				if err := dockerBenchScanner.Cleanup(); err != nil {
@@ -618,12 +627,9 @@ func toggleIntegration(integrationName string, enabled bool) error {
 				}
 			}
 
-			// Note: We intentionally don't uninstall OpenSCAP packages as they may be
-			// used by other system tools or administrators. If needed, run cleanup manually.
-			components["openscap"] = "retained"
 			overallStatus = "disabled"
-			statusMessage = "Compliance disabled (OpenSCAP packages retained)"
-			logger.Info("Compliance cleanup complete (OpenSCAP packages retained)")
+			statusMessage = "Compliance disabled and tools removed"
+			logger.Info("Compliance cleanup complete")
 		}
 
 		// Send final status update
