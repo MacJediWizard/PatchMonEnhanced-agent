@@ -495,39 +495,44 @@ func (s *OpenSCAPScanner) UpgradeSSGContent() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	// Environment for non-interactive apt operations
+	// Environment for fully non-interactive apt operations
 	nonInteractiveEnv := append(os.Environ(),
 		"DEBIAN_FRONTEND=noninteractive",
 		"NEEDRESTART_MODE=a",
 		"NEEDRESTART_SUSPEND=1",
+		"APT_LISTCHANGES_FRONTEND=none",
+		"UCF_FORCE_CONFFOLD=1",
 	)
+
+	// Helper to run apt commands with stdin closed
+	runAptCmd := func(args ...string) ([]byte, error) {
+		cmd := exec.CommandContext(ctx, "apt-get", args...)
+		cmd.Env = nonInteractiveEnv
+		// Close stdin to prevent any prompts waiting for input
+		cmd.Stdin = nil
+		return cmd.CombinedOutput()
+	}
 
 	switch s.osInfo.Family {
 	case "debian":
 		// Update package cache first
 		s.logger.Info("Updating package cache...")
-		updateCmd := exec.CommandContext(ctx, "apt-get", "update", "-qq")
-		updateCmd.Env = nonInteractiveEnv
-		updateCmd.Run() // Ignore errors on update
+		runAptCmd("update", "-qq")
 
 		// Upgrade ssg-base and ssg-debderived packages
 		s.logger.Info("Upgrading ssg-base and ssg-debderived packages...")
-		upgradeCmd := exec.CommandContext(ctx, "apt-get", "install", "-y", "-qq",
+		output, err := runAptCmd("install", "-y", "-qq",
 			"-o", "Dpkg::Options::=--force-confdef",
 			"-o", "Dpkg::Options::=--force-confold",
 			"--only-upgrade",
 			"ssg-base", "ssg-debderived")
-		upgradeCmd.Env = nonInteractiveEnv
-		output, err := upgradeCmd.CombinedOutput()
 		if err != nil {
 			// Try install instead of upgrade (in case packages weren't installed)
 			s.logger.Debug("Upgrade failed, trying fresh install...")
-			installCmd := exec.CommandContext(ctx, "apt-get", "install", "-y", "-qq",
+			output, err = runAptCmd("install", "-y", "-qq",
 				"-o", "Dpkg::Options::=--force-confdef",
 				"-o", "Dpkg::Options::=--force-confold",
 				"ssg-base", "ssg-debderived")
-			installCmd.Env = nonInteractiveEnv
-			output, err = installCmd.CombinedOutput()
 			if err != nil {
 				if ctx.Err() == context.DeadlineExceeded {
 					return fmt.Errorf("SSG upgrade timed out after 5 minutes")
