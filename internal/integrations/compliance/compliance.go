@@ -70,6 +70,11 @@ func (c *Integration) IsAvailable() bool {
 
 // Collect gathers compliance scan data
 func (c *Integration) Collect(ctx context.Context) (*models.IntegrationData, error) {
+	return c.CollectWithOptions(ctx, nil)
+}
+
+// CollectWithOptions gathers compliance scan data with scan options (remediation, etc.)
+func (c *Integration) CollectWithOptions(ctx context.Context, options *models.ComplianceScanOptions) (*models.IntegrationData, error) {
 	startTime := time.Now()
 
 	c.logger.Info("Starting compliance scan collection...")
@@ -90,8 +95,21 @@ func (c *Integration) Collect(ctx context.Context) (*models.IntegrationData, err
 
 	// Run OpenSCAP scan if available
 	if c.openscap.IsAvailable() {
-		c.logger.Info("Running OpenSCAP CIS benchmark scan...")
-		scan, err := c.openscap.RunScan(ctx, "level1_server")
+		var scan *models.ComplianceScan
+		var err error
+
+		if options != nil && options.EnableRemediation {
+			c.logger.Info("Running OpenSCAP CIS benchmark scan with remediation enabled...")
+			scan, err = c.openscap.RunScanWithOptions(ctx, options)
+		} else {
+			c.logger.Info("Running OpenSCAP CIS benchmark scan...")
+			profileID := "level1_server"
+			if options != nil && options.ProfileID != "" {
+				profileID = options.ProfileID
+			}
+			scan, err = c.openscap.RunScan(ctx, profileID)
+		}
+
 		if err != nil {
 			c.logger.WithError(err).Warn("OpenSCAP scan failed")
 			// Add failed scan result
@@ -104,12 +122,16 @@ func (c *Integration) Collect(ctx context.Context) (*models.IntegrationData, err
 			})
 		} else {
 			complianceData.Scans = append(complianceData.Scans, *scan)
-			c.logger.WithFields(logrus.Fields{
+			logFields := logrus.Fields{
 				"profile": scan.ProfileName,
 				"score":   fmt.Sprintf("%.1f%%", scan.Score),
 				"passed":  scan.Passed,
 				"failed":  scan.Failed,
-			}).Info("OpenSCAP scan completed")
+			}
+			if scan.RemediationApplied {
+				logFields["remediation_count"] = scan.RemediationCount
+			}
+			c.logger.WithFields(logFields).Info("OpenSCAP scan completed")
 		}
 	}
 

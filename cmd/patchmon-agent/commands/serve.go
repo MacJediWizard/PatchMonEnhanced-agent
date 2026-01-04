@@ -268,14 +268,26 @@ func runService() error {
 					}).Info("Integration toggled successfully, service will restart")
 				}
 			case "compliance_scan":
-				logger.WithField("profile_type", m.profileType).Info("Running on-demand compliance scan...")
-				go func(profileType string) {
-					if err := runComplianceScan(profileType); err != nil {
+				logger.WithFields(map[string]interface{}{
+					"profile_type":       m.profileType,
+					"enable_remediation": m.enableRemediation,
+				}).Info("Running on-demand compliance scan...")
+				go func(msg wsMsg) {
+					options := &models.ComplianceScanOptions{
+						ProfileID:            msg.profileType,
+						EnableRemediation:    msg.enableRemediation,
+						FetchRemoteResources: msg.fetchRemoteResources,
+					}
+					if err := runComplianceScanWithOptions(options); err != nil {
 						logger.WithError(err).Warn("compliance_scan failed")
 					} else {
-						logger.Info("On-demand compliance scan completed successfully")
+						if msg.enableRemediation {
+							logger.Info("On-demand compliance scan with remediation completed successfully")
+						} else {
+							logger.Info("On-demand compliance scan completed successfully")
+						}
 					}
-				}(m.profileType)
+				}(m)
 			}
 		}
 	}
@@ -310,13 +322,15 @@ func startIntegrationMonitoring(ctx context.Context, eventChan chan<- interface{
 }
 
 type wsMsg struct {
-	kind               string
-	interval           int
-	version            string
-	force              bool
-	integrationName    string
-	integrationEnabled bool
-	profileType        string // For compliance_scan: openscap, docker-bench, all
+	kind                 string
+	interval             int
+	version              string
+	force                bool
+	integrationName      string
+	integrationEnabled   bool
+	profileType          string // For compliance_scan: openscap, docker-bench, all
+	enableRemediation    bool   // For compliance_scan: enable auto-remediation
+	fetchRemoteResources bool   // For compliance_scan: fetch remote resources
 }
 
 func wsLoop(out chan<- wsMsg, dockerEvents <-chan interface{}) {
@@ -469,14 +483,16 @@ func connectOnce(out chan<- wsMsg, dockerEvents <-chan interface{}) error {
 			return err
 		}
 		var payload struct {
-			Type           string `json:"type"`
-			UpdateInterval int    `json:"update_interval"`
-			Version        string `json:"version"`
-			Force          bool   `json:"force"`
-			Message        string `json:"message"`
-			Integration    string `json:"integration"`
-			Enabled        bool   `json:"enabled"`
-			ProfileType    string `json:"profile_type"` // For compliance_scan
+			Type                 string `json:"type"`
+			UpdateInterval       int    `json:"update_interval"`
+			Version              string `json:"version"`
+			Force                bool   `json:"force"`
+			Message              string `json:"message"`
+			Integration          string `json:"integration"`
+			Enabled              bool   `json:"enabled"`
+			ProfileType          string `json:"profile_type"`           // For compliance_scan
+			EnableRemediation    bool   `json:"enable_remediation"`     // For compliance_scan
+			FetchRemoteResources bool   `json:"fetch_remote_resources"` // For compliance_scan
 		}
 		if json.Unmarshal(data, &payload) == nil {
 			switch payload.Type {
@@ -515,10 +531,15 @@ func connectOnce(out chan<- wsMsg, dockerEvents <-chan interface{}) error {
 				if profileType == "" {
 					profileType = "all"
 				}
-				logger.WithField("profile_type", profileType).Info("compliance_scan received")
+				logger.WithFields(map[string]interface{}{
+					"profile_type":       profileType,
+					"enable_remediation": payload.EnableRemediation,
+				}).Info("compliance_scan received")
 				out <- wsMsg{
-					kind:        "compliance_scan",
-					profileType: profileType,
+					kind:                 "compliance_scan",
+					profileType:          profileType,
+					enableRemediation:    payload.EnableRemediation,
+					fetchRemoteResources: payload.FetchRemoteResources,
 				}
 			}
 		}
@@ -768,9 +789,19 @@ rm -f "$0"
 	}
 }
 
-// runComplianceScan runs an on-demand compliance scan and sends results to server
+// runComplianceScan runs an on-demand compliance scan and sends results to server (backwards compatible)
 func runComplianceScan(profileType string) error {
-	logger.WithField("profile_type", profileType).Info("Starting on-demand compliance scan")
+	return runComplianceScanWithOptions(&models.ComplianceScanOptions{
+		ProfileID: profileType,
+	})
+}
+
+// runComplianceScanWithOptions runs an on-demand compliance scan with options and sends results to server
+func runComplianceScanWithOptions(options *models.ComplianceScanOptions) error {
+	logger.WithFields(map[string]interface{}{
+		"profile_id":         options.ProfileID,
+		"enable_remediation": options.EnableRemediation,
+	}).Info("Starting on-demand compliance scan")
 
 	// Create compliance integration
 	complianceInteg := compliance.New(logger)
@@ -781,11 +812,11 @@ func runComplianceScan(profileType string) error {
 		return fmt.Errorf("compliance scanning not available on this system")
 	}
 
-	// Run the scan
+	// Run the scan with options
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	integrationData, err := complianceInteg.Collect(ctx)
+	integrationData, err := complianceInteg.CollectWithOptions(ctx, options)
 	if err != nil {
 		return fmt.Errorf("compliance scan failed: %w", err)
 	}
@@ -824,10 +855,14 @@ func runComplianceScan(profileType string) error {
 		return fmt.Errorf("failed to send compliance data: %w", err)
 	}
 
-	logger.WithFields(map[string]interface{}{
+	logFields := map[string]interface{}{
 		"scans_received": response.ScansReceived,
 		"message":        response.Message,
-	}).Info("On-demand compliance scan results sent to server")
+	}
+	if options.EnableRemediation {
+		logFields["remediation_enabled"] = true
+	}
+	logger.WithFields(logFields).Info("On-demand compliance scan results sent to server")
 
 	return nil
 }
