@@ -87,8 +87,16 @@ func (s *OpenSCAPScanner) GetContentFilePath() string {
 	return s.getContentFile()
 }
 
-// GetContentPackageVersion returns the ssg-base package version
+// GetContentPackageVersion returns the SSG content version
+// First checks for GitHub-installed version, then falls back to package manager
 func (s *OpenSCAPScanner) GetContentPackageVersion() string {
+	// First check for GitHub-installed version marker
+	githubVersion := s.getInstalledSSGVersion()
+	if githubVersion != "" {
+		return githubVersion
+	}
+
+	// Fall back to package manager version
 	var cmd *exec.Cmd
 
 	switch s.osInfo.Family {
@@ -278,11 +286,18 @@ func (s *OpenSCAPScanner) GetScannerDetails() *models.ComplianceScannerDetails {
 	// Discover available profiles dynamically
 	profiles := s.DiscoverProfiles()
 
+	// Determine content package source
+	contentPackage := fmt.Sprintf("ssg-base %s", contentVersion)
+	githubVersion := s.getInstalledSSGVersion()
+	if githubVersion != "" {
+		contentPackage = fmt.Sprintf("SSG %s (GitHub)", githubVersion)
+	}
+
 	return &models.ComplianceScannerDetails{
 		OpenSCAPVersion:   s.version,
 		OpenSCAPAvailable: s.available,
 		ContentFile:       filepath.Base(contentFile),
-		ContentPackage:    fmt.Sprintf("ssg-base %s", contentVersion),
+		ContentPackage:    contentPackage,
 		SSGVersion:        contentVersion,
 		SSGMinVersion:     minVersion,
 		SSGNeedsUpgrade:   ssgNeedsUpgrade,
