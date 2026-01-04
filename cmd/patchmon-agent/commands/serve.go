@@ -368,13 +368,21 @@ func remediateSingleRule(ruleID string) error {
 	}
 
 	// Run scan with remediation for just this rule
+	// Use level1_server as the default profile - it contains most common rules
+	// The --rule flag will filter to just the specified rule
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	options := &models.ComplianceScanOptions{
-		ProfileID:         ruleID, // The specific rule to check and remediate
+		ProfileID:         "level1_server", // Use default CIS Level 1 Server profile
+		RuleID:            ruleID,          // Filter to this specific rule
 		EnableRemediation: true,
 	}
+
+	logger.WithFields(map[string]interface{}{
+		"profile_id": options.ProfileID,
+		"rule_id":    options.RuleID,
+	}).Info("Running single rule remediation with oscap")
 
 	_, err := complianceInteg.CollectWithOptions(ctx, options)
 	if err != nil {

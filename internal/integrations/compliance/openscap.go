@@ -950,6 +950,12 @@ func (s *OpenSCAPScanner) RunScanWithOptions(ctx context.Context, options *model
 		s.logger.Info("Remediation enabled - will attempt to fix failed rules")
 	}
 
+	// Add rule filter for single rule remediation
+	if options.RuleID != "" {
+		args = append(args, "--rule", options.RuleID)
+		s.logger.WithField("rule_id", options.RuleID).Info("Filtering scan to single rule")
+	}
+
 	if options.FetchRemoteResources {
 		args = append(args, "--fetch-remote-resources")
 	}

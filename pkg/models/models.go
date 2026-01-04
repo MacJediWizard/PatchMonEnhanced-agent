@@ -218,6 +218,7 @@ type ScanProfileInfo struct {
 // ComplianceScanOptions represents configurable scan options
 type ComplianceScanOptions struct {
 	ProfileID            string `json:"profile_id"`                       // Profile to use for scan
+	RuleID               string `json:"rule_id,omitempty"`                // Specific rule ID to scan/remediate (for single rule operations)
 	EnableRemediation    bool   `json:"enable_remediation,omitempty"`     // Enable automatic remediation
 	RemediationType      string `json:"remediation_type,omitempty"`       // "online", "offline", "script"
 	FetchRemoteResources bool   `json:"fetch_remote_resources,omitempty"` // Fetch remote OVAL content
