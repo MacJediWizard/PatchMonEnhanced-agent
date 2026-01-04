@@ -18,6 +18,8 @@ type ComplianceResult struct {
 	Title       string `json:"title"`
 	Status      string `json:"status"` // pass, fail, warn, skip, notapplicable, error
 	Finding     string `json:"finding,omitempty"`
+	Actual      string `json:"actual,omitempty"`   // Actual value found on the system
+	Expected    string `json:"expected,omitempty"` // Expected/required value
 	Section     string `json:"section,omitempty"`
 	Description string `json:"description,omitempty"`
 	Severity    string `json:"severity,omitempty"`

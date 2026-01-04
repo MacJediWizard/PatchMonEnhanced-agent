@@ -927,11 +927,21 @@ func (s *OpenSCAPScanner) RunScanWithOptions(ctx context.Context, options *model
 	resultsFile.Close()
 	defer os.Remove(resultsPath)
 
+	// Create temp file for OVAL results (contains detailed check data)
+	ovalResultsFile, err := os.CreateTemp("", "oscap-oval-*.xml")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create oval temp file: %w", err)
+	}
+	ovalResultsPath := ovalResultsFile.Name()
+	ovalResultsFile.Close()
+	defer os.Remove(ovalResultsPath)
+
 	// Build command arguments
 	args := []string{
 		"xccdf", "eval",
 		"--profile", profileID,
 		"--results", resultsPath,
+		"--oval-results", // Generate detailed OVAL results with actual values
 	}
 
 	// Add optional arguments based on options
@@ -986,8 +996,8 @@ func (s *OpenSCAPScanner) RunScanWithOptions(ctx context.Context, options *model
 		}
 	}
 
-	// Parse results
-	scan, err := s.parseResults(resultsPath, options.ProfileID)
+	// Parse results (pass oscap output for additional context)
+	scan, err := s.parseResults(resultsPath, options.ProfileID, string(output))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse results: %w", err)
 	}
@@ -1084,7 +1094,7 @@ type ruleMetadata struct {
 }
 
 // parseResults parses the XCCDF results file and extracts rich metadata
-func (s *OpenSCAPScanner) parseResults(resultsPath string, profileName string) (*models.ComplianceScan, error) {
+func (s *OpenSCAPScanner) parseResults(resultsPath string, profileName string, oscapOutput string) (*models.ComplianceScan, error) {
 	data, err := os.ReadFile(resultsPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read results: %w", err)
@@ -1101,6 +1111,11 @@ func (s *OpenSCAPScanner) parseResults(resultsPath string, profileName string) (
 
 	// First, extract rule metadata from the embedded benchmark (Rule definitions)
 	ruleMetadataMap := s.extractRuleMetadata(content)
+
+	// Parse oscap output for rule-specific failure details
+	// oscap output format: "Title	rule_id	result"
+	// For failures, additional detail lines follow
+	ruleOutputMap := s.parseOscapOutput(oscapOutput)
 
 	// Parse rule results with optional message element
 	// Pattern captures: idref, full rule-result block content
@@ -1130,6 +1145,13 @@ func (s *OpenSCAPScanner) parseResults(resultsPath string, profileName string) (
 				finding = strings.TrimSpace(messageMatch[1])
 			}
 
+			// If no finding from XML, try to get from oscap output
+			if finding == "" && status == "fail" {
+				if outputInfo, ok := ruleOutputMap[ruleID]; ok {
+					finding = outputInfo
+				}
+			}
+
 			// Update counters
 			switch status {
 			case "pass":
@@ -1154,11 +1176,16 @@ func (s *OpenSCAPScanner) parseResults(resultsPath string, profileName string) (
 				title = s.extractTitle(ruleID)
 			}
 
+			// Extract actual/expected from finding if possible
+			actual, expected := s.parseActualExpected(finding, metadata.Description)
+
 			scan.Results = append(scan.Results, models.ComplianceResult{
 				RuleID:      ruleID,
 				Title:       title,
 				Status:      status,
 				Finding:     finding,
+				Actual:      actual,
+				Expected:    expected,
 				Description: metadata.Description,
 				Severity:    metadata.Severity,
 				Remediation: metadata.Remediation,
@@ -1176,6 +1203,109 @@ func (s *OpenSCAPScanner) parseResults(resultsPath string, profileName string) (
 	}
 
 	return scan, nil
+}
+
+// parseOscapOutput extracts rule-specific information from oscap stdout
+func (s *OpenSCAPScanner) parseOscapOutput(output string) map[string]string {
+	ruleInfo := make(map[string]string)
+
+	// oscap output contains lines like:
+	// "Title\trule_id\tresult"
+	// For failed rules, we want to capture any additional context
+	lines := strings.Split(output, "\n")
+
+	var currentRuleID string
+	var currentDetails []string
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Check if this is a rule result line (contains rule ID pattern)
+		if strings.Contains(line, "xccdf_org.ssgproject.content_rule_") {
+			// Save previous rule's details if any
+			if currentRuleID != "" && len(currentDetails) > 0 {
+				ruleInfo[currentRuleID] = strings.Join(currentDetails, "; ")
+			}
+
+			// Extract rule ID from line
+			rulePattern := regexp.MustCompile(`(xccdf_org\.ssgproject\.content_rule_[^\s\t]+)`)
+			if match := rulePattern.FindStringSubmatch(line); len(match) >= 2 {
+				currentRuleID = match[1]
+				currentDetails = nil
+
+				// Check if line contains failure indicator and additional info
+				if strings.Contains(strings.ToLower(line), "fail") {
+					// Look for any additional info after the status
+					parts := strings.Split(line, "\t")
+					if len(parts) > 3 {
+						currentDetails = append(currentDetails, strings.Join(parts[3:], " "))
+					}
+				}
+			}
+		} else if currentRuleID != "" && !strings.HasPrefix(line, "Title") {
+			// This might be additional detail for the current rule
+			// Capture lines that look like check output (often start with paths or values)
+			if strings.HasPrefix(line, "/") || strings.Contains(line, "=") || strings.Contains(line, ":") {
+				currentDetails = append(currentDetails, line)
+			}
+		}
+	}
+
+	// Save last rule's details
+	if currentRuleID != "" && len(currentDetails) > 0 {
+		ruleInfo[currentRuleID] = strings.Join(currentDetails, "; ")
+	}
+
+	return ruleInfo
+}
+
+// parseActualExpected attempts to extract actual and expected values from finding text
+func (s *OpenSCAPScanner) parseActualExpected(finding string, description string) (actual, expected string) {
+	if finding == "" {
+		return "", ""
+	}
+
+	// Common patterns in XCCDF findings:
+	// "expected X but found Y"
+	// "value is X, should be Y"
+	// "X is set to Y"
+
+	// Pattern: "expected ... but found ..."
+	pattern1 := regexp.MustCompile(`(?i)expected\s+['"]?([^'"]+?)['"]?\s+but\s+found\s+['"]?([^'"]+?)['"]?`)
+	if match := pattern1.FindStringSubmatch(finding); len(match) >= 3 {
+		return match[2], match[1] // actual, expected
+	}
+
+	// Pattern: "found ... expected ..."
+	pattern2 := regexp.MustCompile(`(?i)found\s+['"]?([^'"]+?)['"]?\s+expected\s+['"]?([^'"]+?)['"]?`)
+	if match := pattern2.FindStringSubmatch(finding); len(match) >= 3 {
+		return match[1], match[2]
+	}
+
+	// Pattern: "is set to X" (actual value)
+	pattern3 := regexp.MustCompile(`(?i)is\s+set\s+to\s+['"]?([^'"]+?)['"]?`)
+	if match := pattern3.FindStringSubmatch(finding); len(match) >= 2 {
+		actual = match[1]
+	}
+
+	// Pattern: "should be X" (expected value)
+	pattern4 := regexp.MustCompile(`(?i)should\s+be\s+['"]?([^'"]+?)['"]?`)
+	if match := pattern4.FindStringSubmatch(finding); len(match) >= 2 {
+		expected = match[1]
+	}
+
+	// Pattern: "value X" or "= X"
+	pattern5 := regexp.MustCompile(`(?:value|=)\s*['"]?(\S+)['"]?`)
+	if actual == "" {
+		if match := pattern5.FindStringSubmatch(finding); len(match) >= 2 {
+			actual = match[1]
+		}
+	}
+
+	return actual, expected
 }
 
 // extractRuleMetadata extracts rule definitions from the embedded benchmark in XCCDF results
