@@ -237,14 +237,14 @@ func (s *OpenSCAPScanner) GetScannerDetails() *models.ComplianceScannerDetails {
 			contentMismatch = true
 			// Provide more specific guidance for Ubuntu 24.04+
 			if s.osInfo.Name == "ubuntu" && s.osInfo.Version >= "24.04" {
-				mismatchWarning = fmt.Sprintf("Content file %s does not match Ubuntu %s. CIS/STIG benchmarks for Ubuntu 24.04 are not yet publicly available. Consider Canonical's Ubuntu Security Guide (USG) with Ubuntu Pro for official compliance scanning.", baseName, s.osInfo.Version)
+				mismatchWarning = fmt.Sprintf("Content file %s does not match Ubuntu %s. Upgrade ssg-base to v0.1.76+ for Ubuntu 24.04 CIS/STIG content, or use Canonical's Ubuntu Security Guide (USG) with Ubuntu Pro.", baseName, s.osInfo.Version)
 			} else {
 				mismatchWarning = fmt.Sprintf("Content file %s may not match OS version %s. Consider upgrading ssg-base package.", baseName, s.osInfo.Version)
 			}
 		}
 	} else if contentFile == "" && s.osInfo.Name == "ubuntu" && s.osInfo.Version >= "24.04" {
 		contentMismatch = true
-		mismatchWarning = "No SCAP content available for Ubuntu 24.04. CIS/STIG benchmarks are not yet publicly available. Consider Canonical's Ubuntu Security Guide (USG) with Ubuntu Pro."
+		mismatchWarning = "No SCAP content found for Ubuntu 24.04. Ensure ssg-base v0.1.76+ is installed, or use Canonical's Ubuntu Security Guide (USG) with Ubuntu Pro."
 	}
 
 	// Discover available profiles dynamically
@@ -285,10 +285,10 @@ func (s *OpenSCAPScanner) EnsureInstalled() error {
 		// Ubuntu/Debian - always update and upgrade to get latest content
 		s.logger.Info("Installing/upgrading OpenSCAP on Debian-based system...")
 
-		// Check if Ubuntu 24.04+ (Noble Numbat) - has different package requirements
+		// Check if Ubuntu 24.04+ (Noble Numbat)
 		isUbuntu2404Plus := s.osInfo.Name == "ubuntu" && s.osInfo.Version >= "24.04"
 		if isUbuntu2404Plus {
-			s.logger.Warn("Ubuntu 24.04+ detected: CIS/STIG content may be limited. SCAP Security Guide content is in beta.")
+			s.logger.Info("Ubuntu 24.04+ detected: CIS/STIG content requires ssg-base >= 0.1.76 or Canonical's Ubuntu Security Guide (USG)")
 		}
 
 		// Update package cache first (with timeout)
