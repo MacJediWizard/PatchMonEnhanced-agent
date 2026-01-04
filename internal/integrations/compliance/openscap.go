@@ -79,6 +79,60 @@ func (s *OpenSCAPScanner) GetOSInfo() models.ComplianceOSInfo {
 	return s.osInfo
 }
 
+// EnsureInstalled installs OpenSCAP and SCAP content if not present
+func (s *OpenSCAPScanner) EnsureInstalled() error {
+	// Check if already available
+	if s.available {
+		s.logger.Debug("OpenSCAP already installed and available")
+		return nil
+	}
+
+	s.logger.Info("OpenSCAP not found, attempting to install...")
+
+	var installCmd *exec.Cmd
+
+	switch s.osInfo.Family {
+	case "debian":
+		// Ubuntu/Debian
+		s.logger.Info("Installing OpenSCAP on Debian-based system...")
+		// Update package cache first
+		updateCmd := exec.Command("apt-get", "update", "-qq")
+		updateCmd.Run() // Ignore errors on update
+		installCmd = exec.Command("apt-get", "install", "-y", "-qq", "openscap-scanner", "ssg-debderived", "ssg-base")
+	case "rhel":
+		// RHEL/CentOS/Rocky/Alma/Fedora
+		s.logger.Info("Installing OpenSCAP on RHEL-based system...")
+		// Try dnf first, fall back to yum
+		if _, err := exec.LookPath("dnf"); err == nil {
+			installCmd = exec.Command("dnf", "install", "-y", "-q", "openscap-scanner", "scap-security-guide")
+		} else {
+			installCmd = exec.Command("yum", "install", "-y", "-q", "openscap-scanner", "scap-security-guide")
+		}
+	case "suse":
+		// SLES/openSUSE
+		s.logger.Info("Installing OpenSCAP on SUSE-based system...")
+		installCmd = exec.Command("zypper", "--non-interactive", "install", "openscap-utils", "scap-security-guide")
+	default:
+		return fmt.Errorf("unsupported OS family: %s (OS: %s)", s.osInfo.Family, s.osInfo.Name)
+	}
+
+	output, err := installCmd.CombinedOutput()
+	if err != nil {
+		s.logger.WithError(err).WithField("output", string(output)).Warn("Failed to install OpenSCAP")
+		return fmt.Errorf("failed to install OpenSCAP: %w\nOutput: %s", err, string(output))
+	}
+
+	s.logger.Info("OpenSCAP installed successfully")
+
+	// Re-check availability after installation
+	s.checkAvailability()
+	if !s.available {
+		return fmt.Errorf("OpenSCAP installed but still not available - content files may be missing")
+	}
+
+	return nil
+}
+
 // checkAvailability checks if OpenSCAP is installed and has content
 func (s *OpenSCAPScanner) checkAvailability() {
 	// Check if oscap binary exists
@@ -408,4 +462,46 @@ func (s *OpenSCAPScanner) extractTitle(ruleID string) string {
 	}
 
 	return title
+}
+
+// Cleanup removes OpenSCAP and related packages
+// Note: This is optional - packages can be left installed if desired
+func (s *OpenSCAPScanner) Cleanup() error {
+	if !s.available {
+		s.logger.Debug("OpenSCAP not installed, nothing to clean up")
+		return nil
+	}
+
+	s.logger.Info("Removing OpenSCAP packages...")
+
+	var removeCmd *exec.Cmd
+
+	switch s.osInfo.Family {
+	case "debian":
+		removeCmd = exec.Command("apt-get", "remove", "-y", "-qq", "openscap-scanner", "ssg-debderived", "ssg-base")
+	case "rhel":
+		if _, err := exec.LookPath("dnf"); err == nil {
+			removeCmd = exec.Command("dnf", "remove", "-y", "-q", "openscap-scanner", "scap-security-guide")
+		} else {
+			removeCmd = exec.Command("yum", "remove", "-y", "-q", "openscap-scanner", "scap-security-guide")
+		}
+	case "suse":
+		removeCmd = exec.Command("zypper", "--non-interactive", "remove", "openscap-utils", "scap-security-guide")
+	default:
+		s.logger.Debug("Unknown OS family, skipping package removal")
+		return nil
+	}
+
+	output, err := removeCmd.CombinedOutput()
+	if err != nil {
+		s.logger.WithError(err).WithField("output", string(output)).Warn("Failed to remove OpenSCAP packages")
+		// Don't return error - cleanup is best-effort
+		return nil
+	}
+
+	s.logger.Info("OpenSCAP packages removed successfully")
+	s.available = false
+	s.version = ""
+
+	return nil
 }

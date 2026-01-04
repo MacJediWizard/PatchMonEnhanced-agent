@@ -532,6 +532,46 @@ func toggleIntegration(integrationName string, enabled bool) error {
 		"enabled":     enabled,
 	}).Info("Toggling integration")
 
+	// Handle compliance tools installation/removal
+	if integrationName == "compliance" {
+		if enabled {
+			logger.Info("Compliance enabled - installing required tools...")
+
+			// Install OpenSCAP
+			openscapScanner := compliance.NewOpenSCAPScanner(logger)
+			if err := openscapScanner.EnsureInstalled(); err != nil {
+				logger.WithError(err).Warn("Failed to install OpenSCAP (will try again on next scan)")
+			} else {
+				logger.Info("OpenSCAP installed successfully")
+			}
+
+			// Pre-pull Docker Bench image if Docker is available
+			dockerBenchScanner := compliance.NewDockerBenchScanner(logger)
+			if dockerBenchScanner.IsAvailable() {
+				if err := dockerBenchScanner.EnsureInstalled(); err != nil {
+					logger.WithError(err).Warn("Failed to pre-pull Docker Bench image (will pull on first scan)")
+				} else {
+					logger.Info("Docker Bench image pulled successfully")
+				}
+			}
+		} else {
+			logger.Info("Compliance disabled - cleaning up tools...")
+
+			// Cleanup is optional - don't remove packages as they may be used by other software
+			// Only clean up Docker images which are specific to compliance scanning
+			dockerBenchScanner := compliance.NewDockerBenchScanner(logger)
+			if dockerBenchScanner.IsAvailable() {
+				if err := dockerBenchScanner.Cleanup(); err != nil {
+					logger.WithError(err).Debug("Failed to cleanup Docker Bench image")
+				}
+			}
+
+			// Note: We intentionally don't uninstall OpenSCAP packages as they may be
+			// used by other system tools or administrators. If needed, run cleanup manually.
+			logger.Info("Compliance cleanup complete (OpenSCAP packages retained)")
+		}
+	}
+
 	// Update config.yml
 	if err := cfgManager.SetIntegrationEnabled(integrationName, enabled); err != nil {
 		return fmt.Errorf("failed to update config: %w", err)
