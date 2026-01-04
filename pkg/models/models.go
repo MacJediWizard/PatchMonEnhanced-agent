@@ -164,6 +164,15 @@ type IntegrationStatusResponse struct {
 	Integrations map[string]bool `json:"integrations"`
 }
 
+// IntegrationSetupStatus represents the setup status of an integration
+type IntegrationSetupStatus struct {
+	Integration string                 `json:"integration"`
+	Enabled     bool                   `json:"enabled"`
+	Status      string                 `json:"status"` // "ready", "installing", "removing", "error"
+	Message     string                 `json:"message"`
+	Components  map[string]string      `json:"components,omitempty"` // Component name -> status
+}
+
 // Credentials holds API authentication information
 type Credentials struct {
 	APIID  string `yaml:"api_id" mapstructure:"api_id"`

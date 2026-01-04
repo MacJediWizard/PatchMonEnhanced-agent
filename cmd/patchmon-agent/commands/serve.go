@@ -534,15 +534,34 @@ func toggleIntegration(integrationName string, enabled bool) error {
 
 	// Handle compliance tools installation/removal
 	if integrationName == "compliance" {
+		// Create HTTP client for sending status updates
+		httpClient := client.New(cfgManager, logger)
+		ctx := context.Background()
+
+		components := make(map[string]string)
+		var overallStatus string
+		var statusMessage string
+
 		if enabled {
 			logger.Info("Compliance enabled - installing required tools...")
+			overallStatus = "installing"
+
+			// Send initial "installing" status
+			httpClient.SendIntegrationSetupStatus(ctx, &models.IntegrationSetupStatus{
+				Integration: "compliance",
+				Enabled:     true,
+				Status:      "installing",
+				Message:     "Installing compliance tools...",
+			})
 
 			// Install OpenSCAP
 			openscapScanner := compliance.NewOpenSCAPScanner(logger)
 			if err := openscapScanner.EnsureInstalled(); err != nil {
 				logger.WithError(err).Warn("Failed to install OpenSCAP (will try again on next scan)")
+				components["openscap"] = "failed"
 			} else {
 				logger.Info("OpenSCAP installed successfully")
+				components["openscap"] = "ready"
 			}
 
 			// Pre-pull Docker Bench image if Docker is available
@@ -550,12 +569,42 @@ func toggleIntegration(integrationName string, enabled bool) error {
 			if dockerBenchScanner.IsAvailable() {
 				if err := dockerBenchScanner.EnsureInstalled(); err != nil {
 					logger.WithError(err).Warn("Failed to pre-pull Docker Bench image (will pull on first scan)")
+					components["docker-bench"] = "failed"
 				} else {
 					logger.Info("Docker Bench image pulled successfully")
+					components["docker-bench"] = "ready"
+				}
+			} else {
+				components["docker-bench"] = "unavailable"
+			}
+
+			// Determine overall status
+			allReady := true
+			for _, status := range components {
+				if status == "failed" {
+					allReady = false
+					break
 				}
 			}
+			if allReady {
+				overallStatus = "ready"
+				statusMessage = "Compliance tools installed and ready"
+			} else {
+				overallStatus = "partial"
+				statusMessage = "Some compliance tools failed to install"
+			}
+
 		} else {
 			logger.Info("Compliance disabled - cleaning up tools...")
+			overallStatus = "removing"
+
+			// Send initial "removing" status
+			httpClient.SendIntegrationSetupStatus(ctx, &models.IntegrationSetupStatus{
+				Integration: "compliance",
+				Enabled:     false,
+				Status:      "removing",
+				Message:     "Removing compliance tools...",
+			})
 
 			// Cleanup is optional - don't remove packages as they may be used by other software
 			// Only clean up Docker images which are specific to compliance scanning
@@ -563,13 +612,28 @@ func toggleIntegration(integrationName string, enabled bool) error {
 			if dockerBenchScanner.IsAvailable() {
 				if err := dockerBenchScanner.Cleanup(); err != nil {
 					logger.WithError(err).Debug("Failed to cleanup Docker Bench image")
+					components["docker-bench"] = "cleanup-failed"
+				} else {
+					components["docker-bench"] = "removed"
 				}
 			}
 
 			// Note: We intentionally don't uninstall OpenSCAP packages as they may be
 			// used by other system tools or administrators. If needed, run cleanup manually.
+			components["openscap"] = "retained"
+			overallStatus = "disabled"
+			statusMessage = "Compliance disabled (OpenSCAP packages retained)"
 			logger.Info("Compliance cleanup complete (OpenSCAP packages retained)")
 		}
+
+		// Send final status update
+		httpClient.SendIntegrationSetupStatus(ctx, &models.IntegrationSetupStatus{
+			Integration: "compliance",
+			Enabled:     enabled,
+			Status:      overallStatus,
+			Message:     statusMessage,
+			Components:  components,
+		})
 	}
 
 	// Update config.yml

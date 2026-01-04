@@ -241,6 +241,36 @@ func (c *Client) GetIntegrationStatus(ctx context.Context) (*models.IntegrationS
 	return result, nil
 }
 
+// SendIntegrationSetupStatus sends the setup status of an integration to the server
+func (c *Client) SendIntegrationSetupStatus(ctx context.Context, status *models.IntegrationSetupStatus) error {
+	url := fmt.Sprintf("%s/api/%s/hosts/integration-status", c.config.PatchmonServer, c.config.APIVersion)
+
+	c.logger.WithFields(logrus.Fields{
+		"integration": status.Integration,
+		"enabled":     status.Enabled,
+		"status":      status.Status,
+	}).Info("Sending integration setup status to server")
+
+	resp, err := c.client.R().
+		SetContext(ctx).
+		SetHeader("Content-Type", "application/json").
+		SetHeader("X-API-ID", c.credentials.APIID).
+		SetHeader("X-API-KEY", c.credentials.APIKey).
+		SetBody(status).
+		Post(url)
+
+	if err != nil {
+		return fmt.Errorf("integration setup status request failed: %w", err)
+	}
+
+	if resp.StatusCode() != 200 {
+		return fmt.Errorf("integration setup status request failed with status %d", resp.StatusCode())
+	}
+
+	c.logger.Info("Integration setup status sent successfully")
+	return nil
+}
+
 // SendDockerStatusEvent sends a real-time Docker container status event via WebSocket
 func (c *Client) SendDockerStatusEvent(event *models.DockerStatusEvent) error {
 	// This will be called by the WebSocket connection in the serve command
