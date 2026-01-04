@@ -158,26 +158,50 @@ func (s *OpenSCAPScanner) GetScannerDetails() *models.ComplianceScannerDetails {
 func (s *OpenSCAPScanner) EnsureInstalled() error {
 	s.logger.Info("Ensuring OpenSCAP is installed with latest SCAP content...")
 
+	// Create context with timeout for package operations
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	// Environment for non-interactive apt operations
+	nonInteractiveEnv := append(os.Environ(),
+		"DEBIAN_FRONTEND=noninteractive",
+		"NEEDRESTART_MODE=a",
+		"NEEDRESTART_SUSPEND=1",
+	)
+
 	switch s.osInfo.Family {
 	case "debian":
 		// Ubuntu/Debian - always update and upgrade to get latest content
 		s.logger.Info("Installing/upgrading OpenSCAP on Debian-based system...")
 
-		// Update package cache first
-		updateCmd := exec.Command("apt-get", "update", "-qq")
+		// Update package cache first (with timeout)
+		updateCmd := exec.CommandContext(ctx, "apt-get", "update", "-qq")
+		updateCmd.Env = nonInteractiveEnv
 		updateCmd.Run() // Ignore errors on update
 
 		// Install or upgrade packages (install -y will upgrade if already installed)
-		installCmd := exec.Command("apt-get", "install", "-y", "-qq", "openscap-scanner", "ssg-debderived", "ssg-base")
+		installCmd := exec.CommandContext(ctx, "apt-get", "install", "-y", "-qq",
+			"-o", "Dpkg::Options::=--force-confdef",
+			"-o", "Dpkg::Options::=--force-confold",
+			"openscap-scanner", "ssg-debderived", "ssg-base")
+		installCmd.Env = nonInteractiveEnv
 		output, err := installCmd.CombinedOutput()
 		if err != nil {
+			if ctx.Err() == context.DeadlineExceeded {
+				s.logger.Warn("OpenSCAP installation timed out after 5 minutes")
+				return fmt.Errorf("installation timed out after 5 minutes")
+			}
 			s.logger.WithError(err).WithField("output", string(output)).Warn("Failed to install OpenSCAP")
 			return fmt.Errorf("failed to install OpenSCAP: %w\nOutput: %s", err, string(output))
 		}
 
 		// Explicitly upgrade to ensure we have the latest SCAP content
 		// This is important for Ubuntu 24.04 which needs ssg-base >= 0.1.76
-		upgradeCmd := exec.Command("apt-get", "upgrade", "-y", "-qq", "ssg-base", "ssg-debderived")
+		upgradeCmd := exec.CommandContext(ctx, "apt-get", "upgrade", "-y", "-qq",
+			"-o", "Dpkg::Options::=--force-confdef",
+			"-o", "Dpkg::Options::=--force-confold",
+			"ssg-base", "ssg-debderived")
+		upgradeCmd.Env = nonInteractiveEnv
 		upgradeOutput, upgradeErr := upgradeCmd.CombinedOutput()
 		if upgradeErr != nil {
 			s.logger.WithField("output", string(upgradeOutput)).Debug("Package upgrade returned non-zero (may already be latest)")
@@ -190,12 +214,16 @@ func (s *OpenSCAPScanner) EnsureInstalled() error {
 		s.logger.Info("Installing/upgrading OpenSCAP on RHEL-based system...")
 		var installCmd *exec.Cmd
 		if _, err := exec.LookPath("dnf"); err == nil {
-			installCmd = exec.Command("dnf", "install", "-y", "-q", "openscap-scanner", "scap-security-guide")
+			installCmd = exec.CommandContext(ctx, "dnf", "install", "-y", "-q", "openscap-scanner", "scap-security-guide")
 		} else {
-			installCmd = exec.Command("yum", "install", "-y", "-q", "openscap-scanner", "scap-security-guide")
+			installCmd = exec.CommandContext(ctx, "yum", "install", "-y", "-q", "openscap-scanner", "scap-security-guide")
 		}
 		output, err := installCmd.CombinedOutput()
 		if err != nil {
+			if ctx.Err() == context.DeadlineExceeded {
+				s.logger.Warn("OpenSCAP installation timed out after 5 minutes")
+				return fmt.Errorf("installation timed out after 5 minutes")
+			}
 			s.logger.WithError(err).WithField("output", string(output)).Warn("Failed to install OpenSCAP")
 			return fmt.Errorf("failed to install OpenSCAP: %w\nOutput: %s", err, string(output))
 		}
@@ -203,9 +231,13 @@ func (s *OpenSCAPScanner) EnsureInstalled() error {
 	case "suse":
 		// SLES/openSUSE
 		s.logger.Info("Installing/upgrading OpenSCAP on SUSE-based system...")
-		installCmd := exec.Command("zypper", "--non-interactive", "install", "openscap-utils", "scap-security-guide")
+		installCmd := exec.CommandContext(ctx, "zypper", "--non-interactive", "install", "openscap-utils", "scap-security-guide")
 		output, err := installCmd.CombinedOutput()
 		if err != nil {
+			if ctx.Err() == context.DeadlineExceeded {
+				s.logger.Warn("OpenSCAP installation timed out after 5 minutes")
+				return fmt.Errorf("installation timed out after 5 minutes")
+			}
 			s.logger.WithError(err).WithField("output", string(output)).Warn("Failed to install OpenSCAP")
 			return fmt.Errorf("failed to install OpenSCAP: %w\nOutput: %s", err, string(output))
 		}
@@ -599,19 +631,34 @@ func (s *OpenSCAPScanner) Cleanup() error {
 
 	s.logger.Info("Removing OpenSCAP packages...")
 
+	// Create context with timeout for package operations
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	// Environment for non-interactive apt operations
+	nonInteractiveEnv := append(os.Environ(),
+		"DEBIAN_FRONTEND=noninteractive",
+		"NEEDRESTART_MODE=a",
+		"NEEDRESTART_SUSPEND=1",
+	)
+
 	var removeCmd *exec.Cmd
 
 	switch s.osInfo.Family {
 	case "debian":
-		removeCmd = exec.Command("apt-get", "remove", "-y", "-qq", "openscap-scanner", "ssg-debderived", "ssg-base")
+		removeCmd = exec.CommandContext(ctx, "apt-get", "remove", "-y", "-qq",
+			"-o", "Dpkg::Options::=--force-confdef",
+			"-o", "Dpkg::Options::=--force-confold",
+			"openscap-scanner", "ssg-debderived", "ssg-base")
+		removeCmd.Env = nonInteractiveEnv
 	case "rhel":
 		if _, err := exec.LookPath("dnf"); err == nil {
-			removeCmd = exec.Command("dnf", "remove", "-y", "-q", "openscap-scanner", "scap-security-guide")
+			removeCmd = exec.CommandContext(ctx, "dnf", "remove", "-y", "-q", "openscap-scanner", "scap-security-guide")
 		} else {
-			removeCmd = exec.Command("yum", "remove", "-y", "-q", "openscap-scanner", "scap-security-guide")
+			removeCmd = exec.CommandContext(ctx, "yum", "remove", "-y", "-q", "openscap-scanner", "scap-security-guide")
 		}
 	case "suse":
-		removeCmd = exec.Command("zypper", "--non-interactive", "remove", "openscap-utils", "scap-security-guide")
+		removeCmd = exec.CommandContext(ctx, "zypper", "--non-interactive", "remove", "openscap-utils", "scap-security-guide")
 	default:
 		s.logger.Debug("Unknown OS family, skipping package removal")
 		return nil
@@ -619,6 +666,10 @@ func (s *OpenSCAPScanner) Cleanup() error {
 
 	output, err := removeCmd.CombinedOutput()
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			s.logger.Warn("OpenSCAP removal timed out after 3 minutes")
+			return fmt.Errorf("removal timed out after 3 minutes")
+		}
 		s.logger.WithError(err).WithField("output", string(output)).Warn("Failed to remove OpenSCAP packages")
 		// Don't return error - cleanup is best-effort
 		return nil
