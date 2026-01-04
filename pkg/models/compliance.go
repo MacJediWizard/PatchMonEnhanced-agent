@@ -26,20 +26,22 @@ type ComplianceResult struct {
 
 // ComplianceScan represents results of a compliance scan
 type ComplianceScan struct {
-	ProfileName   string             `json:"profile_name"`
-	ProfileType   string             `json:"profile_type"` // openscap, docker-bench
-	Status        string             `json:"status"`       // completed, failed, in_progress
-	Score         float64            `json:"score"`
-	TotalRules    int                `json:"total_rules"`
-	Passed        int                `json:"passed"`
-	Failed        int                `json:"failed"`
-	Warnings      int                `json:"warnings"`
-	Skipped       int                `json:"skipped"`
-	NotApplicable int                `json:"not_applicable"`
-	StartedAt     time.Time          `json:"started_at"`
-	CompletedAt   *time.Time         `json:"completed_at,omitempty"`
-	Results       []ComplianceResult `json:"results"`
-	Error         string             `json:"error,omitempty"`
+	ProfileName        string             `json:"profile_name"`
+	ProfileType        string             `json:"profile_type"` // openscap, docker-bench
+	Status             string             `json:"status"`       // completed, failed, in_progress
+	Score              float64            `json:"score"`
+	TotalRules         int                `json:"total_rules"`
+	Passed             int                `json:"passed"`
+	Failed             int                `json:"failed"`
+	Warnings           int                `json:"warnings"`
+	Skipped            int                `json:"skipped"`
+	NotApplicable      int                `json:"not_applicable"`
+	StartedAt          time.Time          `json:"started_at"`
+	CompletedAt        *time.Time         `json:"completed_at,omitempty"`
+	Results            []ComplianceResult `json:"results"`
+	Error              string             `json:"error,omitempty"`
+	RemediationApplied bool               `json:"remediation_applied,omitempty"`
+	RemediationCount   int                `json:"remediation_count,omitempty"` // Number of rules remediated
 }
 
 // ComplianceData represents all compliance-related data

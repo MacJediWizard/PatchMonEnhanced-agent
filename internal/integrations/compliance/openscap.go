@@ -550,8 +550,15 @@ func (s *OpenSCAPScanner) getProfileID(profileName string) string {
 	return ""
 }
 
-// RunScan executes an OpenSCAP scan
+// RunScan executes an OpenSCAP scan (legacy method - calls RunScanWithOptions with defaults)
 func (s *OpenSCAPScanner) RunScan(ctx context.Context, profileName string) (*models.ComplianceScan, error) {
+	return s.RunScanWithOptions(ctx, &models.ComplianceScanOptions{
+		ProfileID: profileName,
+	})
+}
+
+// RunScanWithOptions executes an OpenSCAP scan with configurable options
+func (s *OpenSCAPScanner) RunScanWithOptions(ctx context.Context, options *models.ComplianceScanOptions) (*models.ComplianceScan, error) {
 	if !s.available {
 		return nil, fmt.Errorf("OpenSCAP is not available")
 	}
@@ -563,9 +570,9 @@ func (s *OpenSCAPScanner) RunScan(ctx context.Context, profileName string) (*mod
 		return nil, fmt.Errorf("no SCAP content file found for %s %s", s.osInfo.Name, s.osInfo.Version)
 	}
 
-	profileID := s.getProfileID(profileName)
+	profileID := s.getProfileID(options.ProfileID)
 	if profileID == "" {
-		return nil, fmt.Errorf("profile %s not available for %s", profileName, s.osInfo.Name)
+		return nil, fmt.Errorf("profile %s not available for %s", options.ProfileID, s.osInfo.Name)
 	}
 
 	// Create temp file for results
@@ -577,18 +584,46 @@ func (s *OpenSCAPScanner) RunScan(ctx context.Context, profileName string) (*mod
 	resultsFile.Close()
 	defer os.Remove(resultsPath)
 
-	// Build command
+	// Build command arguments
 	args := []string{
 		"xccdf", "eval",
 		"--profile", profileID,
 		"--results", resultsPath,
-		contentFile,
 	}
 
+	// Add optional arguments based on options
+	if options.EnableRemediation {
+		args = append(args, "--remediate")
+		s.logger.Info("Remediation enabled - will attempt to fix failed rules")
+	}
+
+	if options.FetchRemoteResources {
+		args = append(args, "--fetch-remote-resources")
+	}
+
+	if options.TailoringFile != "" {
+		args = append(args, "--tailoring-file", options.TailoringFile)
+	}
+
+	// Add ARF output if requested
+	if options.OutputFormat == "arf" {
+		arfFile, err := os.CreateTemp("", "oscap-arf-*.xml")
+		if err == nil {
+			arfPath := arfFile.Name()
+			arfFile.Close()
+			defer os.Remove(arfPath)
+			args = append(args, "--results-arf", arfPath)
+		}
+	}
+
+	// Add content file last
+	args = append(args, contentFile)
+
 	s.logger.WithFields(logrus.Fields{
-		"profile":     profileName,
+		"profile":     options.ProfileID,
 		"profile_id":  profileID,
 		"content":     contentFile,
+		"remediation": options.EnableRemediation,
 	}).Debug("Running OpenSCAP scan")
 
 	// Run oscap
@@ -609,7 +644,7 @@ func (s *OpenSCAPScanner) RunScan(ctx context.Context, profileName string) (*mod
 	}
 
 	// Parse results
-	scan, err := s.parseResults(resultsPath, profileName)
+	scan, err := s.parseResults(resultsPath, options.ProfileID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse results: %w", err)
 	}
@@ -618,8 +653,70 @@ func (s *OpenSCAPScanner) RunScan(ctx context.Context, profileName string) (*mod
 	now := time.Now()
 	scan.CompletedAt = &now
 	scan.Status = "completed"
+	scan.RemediationApplied = options.EnableRemediation
 
 	return scan, nil
+}
+
+// GenerateRemediationScript generates a shell script to fix failed rules
+func (s *OpenSCAPScanner) GenerateRemediationScript(ctx context.Context, resultsPath string, outputPath string) error {
+	if !s.available {
+		return fmt.Errorf("OpenSCAP is not available")
+	}
+
+	args := []string{
+		"xccdf", "generate", "fix",
+		"--template", "urn:xccdf:fix:script:sh",
+		"--output", outputPath,
+		resultsPath,
+	}
+
+	s.logger.WithField("output", outputPath).Debug("Generating remediation script")
+
+	cmd := exec.CommandContext(ctx, oscapBinary, args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to generate remediation script: %w\nOutput: %s", err, string(output))
+	}
+
+	s.logger.WithField("output", outputPath).Info("Remediation script generated")
+	return nil
+}
+
+// RunOfflineRemediation applies fixes from a previous scan result
+func (s *OpenSCAPScanner) RunOfflineRemediation(ctx context.Context, resultsPath string) error {
+	if !s.available {
+		return fmt.Errorf("OpenSCAP is not available")
+	}
+
+	contentFile := s.getContentFile()
+	if contentFile == "" {
+		return fmt.Errorf("no SCAP content file found")
+	}
+
+	args := []string{
+		"xccdf", "remediate",
+		"--results", resultsPath,
+		contentFile,
+	}
+
+	s.logger.WithField("results", resultsPath).Info("Running offline remediation")
+
+	cmd := exec.CommandContext(ctx, oscapBinary, args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			// Non-zero exit is expected if some remediations fail
+			if exitErr.ExitCode() > 2 {
+				return fmt.Errorf("remediation failed: %w\nOutput: %s", err, string(output))
+			}
+		} else {
+			return fmt.Errorf("remediation execution failed: %w", err)
+		}
+	}
+
+	s.logger.Info("Offline remediation completed")
+	return nil
 }
 
 // XCCDF result structures for parsing
