@@ -80,49 +80,67 @@ func (s *OpenSCAPScanner) GetOSInfo() models.ComplianceOSInfo {
 }
 
 // EnsureInstalled installs OpenSCAP and SCAP content if not present
+// Also upgrades existing packages to ensure latest content is available
 func (s *OpenSCAPScanner) EnsureInstalled() error {
-	// Check if already available
-	if s.available {
-		s.logger.Debug("OpenSCAP already installed and available")
-		return nil
-	}
-
-	s.logger.Info("OpenSCAP not found, attempting to install...")
-
-	var installCmd *exec.Cmd
+	s.logger.Info("Ensuring OpenSCAP is installed with latest SCAP content...")
 
 	switch s.osInfo.Family {
 	case "debian":
-		// Ubuntu/Debian
-		s.logger.Info("Installing OpenSCAP on Debian-based system...")
+		// Ubuntu/Debian - always update and upgrade to get latest content
+		s.logger.Info("Installing/upgrading OpenSCAP on Debian-based system...")
+
 		// Update package cache first
 		updateCmd := exec.Command("apt-get", "update", "-qq")
 		updateCmd.Run() // Ignore errors on update
-		installCmd = exec.Command("apt-get", "install", "-y", "-qq", "openscap-scanner", "ssg-debderived", "ssg-base")
+
+		// Install or upgrade packages (install -y will upgrade if already installed)
+		installCmd := exec.Command("apt-get", "install", "-y", "-qq", "openscap-scanner", "ssg-debderived", "ssg-base")
+		output, err := installCmd.CombinedOutput()
+		if err != nil {
+			s.logger.WithError(err).WithField("output", string(output)).Warn("Failed to install OpenSCAP")
+			return fmt.Errorf("failed to install OpenSCAP: %w\nOutput: %s", err, string(output))
+		}
+
+		// Explicitly upgrade to ensure we have the latest SCAP content
+		// This is important for Ubuntu 24.04 which needs ssg-base >= 0.1.76
+		upgradeCmd := exec.Command("apt-get", "upgrade", "-y", "-qq", "ssg-base", "ssg-debderived")
+		upgradeOutput, upgradeErr := upgradeCmd.CombinedOutput()
+		if upgradeErr != nil {
+			s.logger.WithField("output", string(upgradeOutput)).Debug("Package upgrade returned non-zero (may already be latest)")
+		} else {
+			s.logger.Info("SCAP content packages upgraded to latest version")
+		}
+
 	case "rhel":
 		// RHEL/CentOS/Rocky/Alma/Fedora
-		s.logger.Info("Installing OpenSCAP on RHEL-based system...")
-		// Try dnf first, fall back to yum
+		s.logger.Info("Installing/upgrading OpenSCAP on RHEL-based system...")
+		var installCmd *exec.Cmd
 		if _, err := exec.LookPath("dnf"); err == nil {
 			installCmd = exec.Command("dnf", "install", "-y", "-q", "openscap-scanner", "scap-security-guide")
 		} else {
 			installCmd = exec.Command("yum", "install", "-y", "-q", "openscap-scanner", "scap-security-guide")
 		}
+		output, err := installCmd.CombinedOutput()
+		if err != nil {
+			s.logger.WithError(err).WithField("output", string(output)).Warn("Failed to install OpenSCAP")
+			return fmt.Errorf("failed to install OpenSCAP: %w\nOutput: %s", err, string(output))
+		}
+
 	case "suse":
 		// SLES/openSUSE
-		s.logger.Info("Installing OpenSCAP on SUSE-based system...")
-		installCmd = exec.Command("zypper", "--non-interactive", "install", "openscap-utils", "scap-security-guide")
+		s.logger.Info("Installing/upgrading OpenSCAP on SUSE-based system...")
+		installCmd := exec.Command("zypper", "--non-interactive", "install", "openscap-utils", "scap-security-guide")
+		output, err := installCmd.CombinedOutput()
+		if err != nil {
+			s.logger.WithError(err).WithField("output", string(output)).Warn("Failed to install OpenSCAP")
+			return fmt.Errorf("failed to install OpenSCAP: %w\nOutput: %s", err, string(output))
+		}
+
 	default:
 		return fmt.Errorf("unsupported OS family: %s (OS: %s)", s.osInfo.Family, s.osInfo.Name)
 	}
 
-	output, err := installCmd.CombinedOutput()
-	if err != nil {
-		s.logger.WithError(err).WithField("output", string(output)).Warn("Failed to install OpenSCAP")
-		return fmt.Errorf("failed to install OpenSCAP: %w\nOutput: %s", err, string(output))
-	}
-
-	s.logger.Info("OpenSCAP installed successfully")
+	s.logger.Info("OpenSCAP installed/upgraded successfully")
 
 	// Re-check availability after installation
 	s.checkAvailability()
@@ -130,7 +148,40 @@ func (s *OpenSCAPScanner) EnsureInstalled() error {
 		return fmt.Errorf("OpenSCAP installed but still not available - content files may be missing")
 	}
 
+	// Check for content version mismatch
+	s.checkContentCompatibility()
+
 	return nil
+}
+
+// checkContentCompatibility checks if the SCAP content is compatible with the OS version
+func (s *OpenSCAPScanner) checkContentCompatibility() {
+	contentFile := s.getContentFile()
+	if contentFile == "" {
+		s.logger.Warn("No SCAP content file found - compliance scans will not work correctly")
+		return
+	}
+
+	// Extract version from content file name (e.g., ssg-ubuntu2204-ds.xml -> 22.04)
+	baseName := filepath.Base(contentFile)
+
+	// Log detected content file
+	s.logger.WithFields(logrus.Fields{
+		"os_name":      s.osInfo.Name,
+		"os_version":   s.osInfo.Version,
+		"content_file": baseName,
+	}).Debug("Checking SCAP content compatibility")
+
+	// Check if content file matches OS version
+	osVersion := strings.ReplaceAll(s.osInfo.Version, ".", "")
+	expectedPattern := fmt.Sprintf("ssg-%s%s", s.osInfo.Name, osVersion)
+
+	if !strings.Contains(baseName, osVersion) && !strings.HasPrefix(baseName, expectedPattern) {
+		s.logger.WithFields(logrus.Fields{
+			"os_version":   s.osInfo.Version,
+			"content_file": baseName,
+		}).Warn("SCAP content may not match OS version - scan results may show many 'notapplicable' rules. Consider updating ssg-base package.")
+	}
 }
 
 // checkAvailability checks if OpenSCAP is installed and has content
