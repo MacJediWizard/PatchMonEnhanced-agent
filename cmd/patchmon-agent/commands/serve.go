@@ -298,6 +298,15 @@ func runService() error {
 						logger.Info("SSG content packages upgraded successfully")
 					}
 				}()
+			case "remediate_rule":
+				logger.WithField("rule_id", m.ruleID).Info("Remediating single rule...")
+				go func(ruleID string) {
+					if err := remediateSingleRule(ruleID); err != nil {
+						logger.WithError(err).WithField("rule_id", ruleID).Warn("remediate_rule failed")
+					} else {
+						logger.WithField("rule_id", ruleID).Info("Single rule remediation completed")
+					}
+				}(m.ruleID)
 			}
 		}
 	}
@@ -344,6 +353,38 @@ func upgradeSSGContent() error {
 	return nil
 }
 
+// remediateSingleRule remediates a single failed compliance rule
+func remediateSingleRule(ruleID string) error {
+	if ruleID == "" {
+		return fmt.Errorf("rule ID is required")
+	}
+
+	logger.WithField("rule_id", ruleID).Info("Starting single rule remediation")
+
+	// Create compliance integration to run remediation
+	complianceInteg := compliance.New(logger)
+	if !complianceInteg.IsAvailable() {
+		return fmt.Errorf("compliance scanning not available on this system")
+	}
+
+	// Run scan with remediation for just this rule
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	options := &models.ComplianceScanOptions{
+		ProfileID:         ruleID, // The specific rule to check and remediate
+		EnableRemediation: true,
+	}
+
+	_, err := complianceInteg.CollectWithOptions(ctx, options)
+	if err != nil {
+		return fmt.Errorf("remediation failed: %w", err)
+	}
+
+	logger.WithField("rule_id", ruleID).Info("Single rule remediation completed successfully")
+	return nil
+}
+
 // startIntegrationMonitoring starts real-time monitoring for integrations that support it
 func startIntegrationMonitoring(ctx context.Context, eventChan chan<- interface{}) {
 	// Create integration manager
@@ -383,6 +424,7 @@ type wsMsg struct {
 	profileID            string // For compliance_scan: specific XCCDF profile ID
 	enableRemediation    bool   // For compliance_scan: enable auto-remediation
 	fetchRemoteResources bool   // For compliance_scan: fetch remote resources
+	ruleID               string // For remediate_rule: specific rule ID to remediate
 }
 
 func wsLoop(out chan<- wsMsg, dockerEvents <-chan interface{}) {
@@ -547,6 +589,7 @@ func connectOnce(out chan<- wsMsg, dockerEvents <-chan interface{}) error {
 			ProfileID            string `json:"profile_id"`             // For compliance_scan: specific XCCDF profile ID
 			EnableRemediation    bool   `json:"enable_remediation"`     // For compliance_scan
 			FetchRemoteResources bool   `json:"fetch_remote_resources"` // For compliance_scan
+			RuleID               string `json:"rule_id"`                // For remediate_rule: specific rule to remediate
 		}
 		if err := json.Unmarshal(data, &payload); err != nil {
 			logger.WithError(err).WithField("data", string(data)).Warn("Failed to parse WebSocket message")
@@ -605,6 +648,9 @@ func connectOnce(out chan<- wsMsg, dockerEvents <-chan interface{}) error {
 				logger.Info("upgrade_ssg received from WebSocket")
 				out <- wsMsg{kind: "upgrade_ssg"}
 				logger.Info("upgrade_ssg sent to message channel")
+			case "remediate_rule":
+				logger.WithField("rule_id", payload.RuleID).Info("remediate_rule received")
+				out <- wsMsg{kind: "remediate_rule", ruleID: payload.RuleID}
 			default:
 				if payload.Type != "" && payload.Type != "connected" {
 					logger.WithField("type", payload.Type).Warn("Unknown WebSocket message type")
