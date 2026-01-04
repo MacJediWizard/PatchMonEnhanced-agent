@@ -235,8 +235,16 @@ func (s *OpenSCAPScanner) GetScannerDetails() *models.ComplianceScannerDetails {
 		baseName := filepath.Base(contentFile)
 		if !strings.Contains(baseName, osVersion) {
 			contentMismatch = true
-			mismatchWarning = fmt.Sprintf("Content file %s may not match OS version %s. Consider upgrading ssg-base package.", baseName, s.osInfo.Version)
+			// Provide more specific guidance for Ubuntu 24.04+
+			if s.osInfo.Name == "ubuntu" && s.osInfo.Version >= "24.04" {
+				mismatchWarning = fmt.Sprintf("Content file %s does not match Ubuntu %s. CIS/STIG benchmarks for Ubuntu 24.04 are not yet publicly available. Consider Canonical's Ubuntu Security Guide (USG) with Ubuntu Pro for official compliance scanning.", baseName, s.osInfo.Version)
+			} else {
+				mismatchWarning = fmt.Sprintf("Content file %s may not match OS version %s. Consider upgrading ssg-base package.", baseName, s.osInfo.Version)
+			}
 		}
+	} else if contentFile == "" && s.osInfo.Name == "ubuntu" && s.osInfo.Version >= "24.04" {
+		contentMismatch = true
+		mismatchWarning = "No SCAP content available for Ubuntu 24.04. CIS/STIG benchmarks are not yet publicly available. Consider Canonical's Ubuntu Security Guide (USG) with Ubuntu Pro."
 	}
 
 	// Discover available profiles dynamically
@@ -277,16 +285,28 @@ func (s *OpenSCAPScanner) EnsureInstalled() error {
 		// Ubuntu/Debian - always update and upgrade to get latest content
 		s.logger.Info("Installing/upgrading OpenSCAP on Debian-based system...")
 
+		// Check if Ubuntu 24.04+ (Noble Numbat) - has different package requirements
+		isUbuntu2404Plus := s.osInfo.Name == "ubuntu" && s.osInfo.Version >= "24.04"
+		if isUbuntu2404Plus {
+			s.logger.Warn("Ubuntu 24.04+ detected: CIS/STIG content may be limited. SCAP Security Guide content is in beta.")
+		}
+
 		// Update package cache first (with timeout)
 		updateCmd := exec.CommandContext(ctx, "apt-get", "update", "-qq")
 		updateCmd.Env = nonInteractiveEnv
 		updateCmd.Run() // Ignore errors on update
 
-		// Install or upgrade packages (install -y will upgrade if already installed)
-		installCmd := exec.CommandContext(ctx, "apt-get", "install", "-y", "-qq",
+		// Build package list - openscap-common is required for Ubuntu 24.04+
+		packages := []string{"openscap-scanner", "openscap-common"}
+
+		// Try to install SSG content packages (may not be available for newer Ubuntu)
+		ssgPackages := []string{"ssg-debderived", "ssg-base"}
+
+		// Install core OpenSCAP packages first
+		installArgs := append([]string{"install", "-y", "-qq",
 			"-o", "Dpkg::Options::=--force-confdef",
-			"-o", "Dpkg::Options::=--force-confold",
-			"openscap-scanner", "ssg-debderived", "ssg-base")
+			"-o", "Dpkg::Options::=--force-confold"}, packages...)
+		installCmd := exec.CommandContext(ctx, "apt-get", installArgs...)
 		installCmd.Env = nonInteractiveEnv
 		output, err := installCmd.CombinedOutput()
 		if err != nil {
@@ -294,22 +314,38 @@ func (s *OpenSCAPScanner) EnsureInstalled() error {
 				s.logger.Warn("OpenSCAP installation timed out after 5 minutes")
 				return fmt.Errorf("installation timed out after 5 minutes")
 			}
-			s.logger.WithError(err).WithField("output", string(output)).Warn("Failed to install OpenSCAP")
+			s.logger.WithError(err).WithField("output", string(output)).Warn("Failed to install OpenSCAP core packages")
 			return fmt.Errorf("failed to install OpenSCAP: %w\nOutput: %s", err, string(output))
 		}
+		s.logger.Info("OpenSCAP core packages installed successfully")
 
-		// Explicitly upgrade to ensure we have the latest SCAP content
-		// This is important for Ubuntu 24.04 which needs ssg-base >= 0.1.76
-		upgradeCmd := exec.CommandContext(ctx, "apt-get", "upgrade", "-y", "-qq",
+		// Try to install SSG content packages (best effort - may fail on Ubuntu 24.04+)
+		ssgArgs := append([]string{"install", "-y", "-qq",
 			"-o", "Dpkg::Options::=--force-confdef",
-			"-o", "Dpkg::Options::=--force-confold",
-			"ssg-base", "ssg-debderived")
-		upgradeCmd.Env = nonInteractiveEnv
-		upgradeOutput, upgradeErr := upgradeCmd.CombinedOutput()
-		if upgradeErr != nil {
-			s.logger.WithField("output", string(upgradeOutput)).Debug("Package upgrade returned non-zero (may already be latest)")
+			"-o", "Dpkg::Options::=--force-confold"}, ssgPackages...)
+		ssgCmd := exec.CommandContext(ctx, "apt-get", ssgArgs...)
+		ssgCmd.Env = nonInteractiveEnv
+		ssgOutput, ssgErr := ssgCmd.CombinedOutput()
+		if ssgErr != nil {
+			s.logger.WithField("output", string(ssgOutput)).Warn("SSG content packages not available or failed to install. CIS scanning may have limited functionality.")
+			if isUbuntu2404Plus {
+				s.logger.Info("For Ubuntu 24.04+, consider using Canonical's Ubuntu Security Guide (USG) with Ubuntu Pro for official CIS benchmarks.")
+			}
 		} else {
-			s.logger.Info("SCAP content packages upgraded to latest version")
+			s.logger.Info("SSG content packages installed successfully")
+
+			// Explicitly upgrade to ensure we have the latest SCAP content
+			upgradeCmd := exec.CommandContext(ctx, "apt-get", "upgrade", "-y", "-qq",
+				"-o", "Dpkg::Options::=--force-confdef",
+				"-o", "Dpkg::Options::=--force-confold",
+				"ssg-base", "ssg-debderived")
+			upgradeCmd.Env = nonInteractiveEnv
+			upgradeOutput, upgradeErr := upgradeCmd.CombinedOutput()
+			if upgradeErr != nil {
+				s.logger.WithField("output", string(upgradeOutput)).Debug("Package upgrade returned non-zero (may already be latest)")
+			} else {
+				s.logger.Info("SCAP content packages upgraded to latest version")
+			}
 		}
 
 	case "rhel":
