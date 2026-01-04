@@ -106,6 +106,122 @@ func (s *OpenSCAPScanner) GetContentPackageVersion() string {
 	return strings.TrimSpace(string(output))
 }
 
+// DiscoverProfiles returns all available profiles from the SCAP content file
+func (s *OpenSCAPScanner) DiscoverProfiles() []models.ScanProfileInfo {
+	contentFile := s.getContentFile()
+	if contentFile == "" {
+		s.logger.Debug("No content file available, returning default profiles")
+		return s.getDefaultProfiles()
+	}
+
+	// Run oscap info to get profile list
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, oscapBinary, "info", "--profiles", contentFile)
+	output, err := cmd.Output()
+	if err != nil {
+		s.logger.WithError(err).Debug("Failed to get profiles from oscap info, using defaults")
+		return s.getDefaultProfiles()
+	}
+
+	profiles := []models.ScanProfileInfo{}
+	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		// Parse profile line: "xccdf_org.ssgproject.content_profile_cis_level1_server:CIS Ubuntu 22.04 Level 1 Server Benchmark"
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) < 1 {
+			continue
+		}
+
+		xccdfId := strings.TrimSpace(parts[0])
+		name := xccdfId
+		if len(parts) == 2 {
+			name = strings.TrimSpace(parts[1])
+		}
+
+		// Determine category from profile ID
+		category := s.categorizeProfile(xccdfId)
+
+		// Create short ID from XCCDF ID
+		shortId := s.createShortId(xccdfId)
+
+		profiles = append(profiles, models.ScanProfileInfo{
+			ID:       shortId,
+			Name:     name,
+			Type:     "openscap",
+			XCCDFId:  xccdfId,
+			Category: category,
+		})
+	}
+
+	if len(profiles) == 0 {
+		return s.getDefaultProfiles()
+	}
+
+	s.logger.WithField("count", len(profiles)).Debug("Discovered profiles from SCAP content")
+	return profiles
+}
+
+// categorizeProfile determines the category of a profile based on its ID
+func (s *OpenSCAPScanner) categorizeProfile(xccdfId string) string {
+	id := strings.ToLower(xccdfId)
+	switch {
+	case strings.Contains(id, "cis"):
+		return "cis"
+	case strings.Contains(id, "stig"):
+		return "stig"
+	case strings.Contains(id, "pci") || strings.Contains(id, "pci-dss"):
+		return "pci-dss"
+	case strings.Contains(id, "hipaa"):
+		return "hipaa"
+	case strings.Contains(id, "anssi"):
+		return "anssi"
+	case strings.Contains(id, "standard"):
+		return "standard"
+	default:
+		return "other"
+	}
+}
+
+// createShortId creates a short profile ID from the full XCCDF ID
+func (s *OpenSCAPScanner) createShortId(xccdfId string) string {
+	// Extract the profile name part: xccdf_org.ssgproject.content_profile_XXX -> XXX
+	if strings.Contains(xccdfId, "_profile_") {
+		parts := strings.SplitN(xccdfId, "_profile_", 2)
+		if len(parts) == 2 {
+			return parts[1]
+		}
+	}
+	return xccdfId
+}
+
+// getDefaultProfiles returns fallback profiles when discovery fails
+func (s *OpenSCAPScanner) getDefaultProfiles() []models.ScanProfileInfo {
+	return []models.ScanProfileInfo{
+		{
+			ID:          "level1_server",
+			Name:        "CIS Level 1 Server",
+			Description: "Basic security hardening for servers",
+			Type:        "openscap",
+			Category:    "cis",
+		},
+		{
+			ID:          "level2_server",
+			Name:        "CIS Level 2 Server",
+			Description: "Extended security hardening (more restrictive)",
+			Type:        "openscap",
+			Category:    "cis",
+		},
+	}
+}
+
 // GetScannerDetails returns comprehensive scanner information
 func (s *OpenSCAPScanner) GetScannerDetails() *models.ComplianceScannerDetails {
 	contentFile := s.getContentFile()
@@ -123,21 +239,8 @@ func (s *OpenSCAPScanner) GetScannerDetails() *models.ComplianceScannerDetails {
 		}
 	}
 
-	// Build available profiles list
-	profiles := []models.ScanProfileInfo{
-		{
-			ID:          "level1_server",
-			Name:        "CIS Level 1 Server",
-			Description: "Basic security hardening for servers",
-			Type:        "openscap",
-		},
-		{
-			ID:          "level2_server",
-			Name:        "CIS Level 2 Server",
-			Description: "Extended security hardening (more restrictive)",
-			Type:        "openscap",
-		},
-	}
+	// Discover available profiles dynamically
+	profiles := s.DiscoverProfiles()
 
 	return &models.ComplianceScannerDetails{
 		OpenSCAPVersion:   s.version,
@@ -433,6 +536,12 @@ func (s *OpenSCAPScanner) GetAvailableProfiles() []string {
 
 // getProfileID returns the full profile ID for this OS
 func (s *OpenSCAPScanner) getProfileID(profileName string) string {
+	// If it's already a full XCCDF profile ID, use it directly
+	if strings.HasPrefix(profileName, "xccdf_") {
+		return profileName
+	}
+
+	// Otherwise, look up the mapping for this OS
 	if osProfiles, exists := profileMappings[profileName]; exists {
 		if profileID, exists := osProfiles[s.osInfo.Name]; exists {
 			return profileID

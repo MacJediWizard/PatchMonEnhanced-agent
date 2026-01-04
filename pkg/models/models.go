@@ -203,10 +203,23 @@ type ComplianceScannerDetails struct {
 
 // ScanProfileInfo describes an available scan profile
 type ScanProfileInfo struct {
-	ID          string `json:"id"`          // Internal ID (e.g., "level1_server")
-	Name        string `json:"name"`        // Display name (e.g., "CIS Level 1 Server")
-	Description string `json:"description"` // Brief description
-	Type        string `json:"type"`        // "openscap" or "docker-bench"
+	ID          string `json:"id"`                    // Internal ID (e.g., "level1_server") or full XCCDF ID
+	Name        string `json:"name"`                  // Display name (e.g., "CIS Level 1 Server")
+	Description string `json:"description,omitempty"` // Brief description
+	Type        string `json:"type"`                  // "openscap" or "docker-bench"
+	XCCDFId     string `json:"xccdf_id,omitempty"`    // Full XCCDF profile ID
+	Category    string `json:"category,omitempty"`    // Category: "cis", "stig", "pci-dss", "hipaa", etc.
+}
+
+// ComplianceScanOptions represents configurable scan options
+type ComplianceScanOptions struct {
+	ProfileID            string `json:"profile_id"`                       // Profile to use for scan
+	EnableRemediation    bool   `json:"enable_remediation,omitempty"`     // Enable automatic remediation
+	RemediationType      string `json:"remediation_type,omitempty"`       // "online", "offline", "script"
+	FetchRemoteResources bool   `json:"fetch_remote_resources,omitempty"` // Fetch remote OVAL content
+	TailoringFile        string `json:"tailoring_file,omitempty"`         // Path to tailoring file
+	OutputFormat         string `json:"output_format,omitempty"`          // "html", "xml", "arf"
+	Timeout              int    `json:"timeout,omitempty"`                // Scan timeout in minutes
 }
 
 // Credentials holds API authentication information
