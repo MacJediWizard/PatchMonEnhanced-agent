@@ -1,10 +1,13 @@
 package compliance
 
 import (
+	"archive/zip"
 	"bufio"
 	"context"
 	"encoding/xml"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -487,105 +490,235 @@ func (s *OpenSCAPScanner) checkContentCompatibility() {
 	}
 }
 
-// UpgradeSSGContent upgrades the SCAP Security Guide content packages to the latest version
+// UpgradeSSGContent upgrades the SCAP Security Guide content from GitHub releases
 func (s *OpenSCAPScanner) UpgradeSSGContent() error {
-	s.logger.Info("Upgrading SCAP Security Guide content packages...")
+	s.logger.Info("Upgrading SCAP Security Guide content from GitHub...")
 
-	// Create context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
-	// Environment for fully non-interactive apt operations
-	nonInteractiveEnv := append(os.Environ(),
-		"DEBIAN_FRONTEND=noninteractive",
-		"NEEDRESTART_MODE=a",
-		"NEEDRESTART_SUSPEND=1",
-		"APT_LISTCHANGES_FRONTEND=none",
-		"UCF_FORCE_CONFFOLD=1",
-	)
-
-	// Helper to run apt commands with stdin closed
-	runAptCmd := func(args ...string) ([]byte, error) {
-		cmd := exec.CommandContext(ctx, "apt-get", args...)
-		cmd.Env = nonInteractiveEnv
-		// Close stdin to prevent any prompts waiting for input
-		cmd.Stdin = nil
-		return cmd.CombinedOutput()
-	}
-
-	switch s.osInfo.Family {
-	case "debian":
-		// Update package cache first
-		s.logger.Info("Updating package cache...")
-		runAptCmd("update", "-qq")
-
-		// Upgrade ssg-base and ssg-debderived packages
-		s.logger.Info("Upgrading ssg-base and ssg-debderived packages...")
-		output, err := runAptCmd("install", "-y", "-qq",
-			"-o", "Dpkg::Options::=--force-confdef",
-			"-o", "Dpkg::Options::=--force-confold",
-			"--only-upgrade",
-			"ssg-base", "ssg-debderived")
-		if err != nil {
-			// Try install instead of upgrade (in case packages weren't installed)
-			s.logger.Debug("Upgrade failed, trying fresh install...")
-			output, err = runAptCmd("install", "-y", "-qq",
-				"-o", "Dpkg::Options::=--force-confdef",
-				"-o", "Dpkg::Options::=--force-confold",
-				"ssg-base", "ssg-debderived")
-			if err != nil {
-				if ctx.Err() == context.DeadlineExceeded {
-					return fmt.Errorf("SSG upgrade timed out after 5 minutes")
-				}
-				s.logger.WithError(err).WithField("output", string(output)).Warn("Failed to upgrade SSG packages")
-				return fmt.Errorf("failed to upgrade SSG packages: %w\nOutput: %s", err, string(output))
-			}
-		}
-
-		// Get new version
-		newVersion := s.GetContentPackageVersion()
-		s.logger.WithField("version", newVersion).Info("SSG content packages upgraded successfully")
-
-	case "rhel":
-		s.logger.Info("Upgrading scap-security-guide package...")
-		var upgradeCmd *exec.Cmd
-		if _, err := exec.LookPath("dnf"); err == nil {
-			upgradeCmd = exec.CommandContext(ctx, "dnf", "upgrade", "-y", "-q", "scap-security-guide")
-		} else {
-			upgradeCmd = exec.CommandContext(ctx, "yum", "update", "-y", "-q", "scap-security-guide")
-		}
-		output, err := upgradeCmd.CombinedOutput()
-		if err != nil {
-			if ctx.Err() == context.DeadlineExceeded {
-				return fmt.Errorf("SSG upgrade timed out after 5 minutes")
-			}
-			s.logger.WithError(err).WithField("output", string(output)).Warn("Failed to upgrade SSG package")
-			return fmt.Errorf("failed to upgrade SSG package: %w\nOutput: %s", err, string(output))
-		}
-		s.logger.Info("SSG content package upgraded successfully")
-
-	case "suse":
-		s.logger.Info("Upgrading scap-security-guide package...")
-		upgradeCmd := exec.CommandContext(ctx, "zypper", "--non-interactive", "update", "scap-security-guide")
-		output, err := upgradeCmd.CombinedOutput()
-		if err != nil {
-			if ctx.Err() == context.DeadlineExceeded {
-				return fmt.Errorf("SSG upgrade timed out after 5 minutes")
-			}
-			s.logger.WithError(err).WithField("output", string(output)).Warn("Failed to upgrade SSG package")
-			return fmt.Errorf("failed to upgrade SSG package: %w\nOutput: %s", err, string(output))
-		}
-		s.logger.Info("SSG content package upgraded successfully")
-
-	default:
-		return fmt.Errorf("unsupported OS family for SSG upgrade: %s", s.osInfo.Family)
+	// Download and install from GitHub
+	if err := s.installSSGFromGitHub(); err != nil {
+		s.logger.WithError(err).Warn("Failed to install SSG from GitHub")
+		return err
 	}
 
 	// Re-check availability after upgrade
 	s.checkAvailability()
 	s.checkContentCompatibility()
 
+	// Verify the new version
+	newVersion := s.getInstalledSSGVersion()
+	s.logger.WithField("version", newVersion).Info("SSG content upgrade completed")
+
 	return nil
+}
+
+// installSSGFromGitHub downloads and installs SSG content from GitHub releases
+func (s *OpenSCAPScanner) installSSGFromGitHub() error {
+	// Latest stable version - update this periodically
+	const ssgVersion = "0.1.79"
+	const ssgURL = "https://github.com/ComplianceAsCode/content/releases/download/v" + ssgVersion + "/scap-security-guide-" + ssgVersion + ".zip"
+
+	s.logger.WithFields(map[string]interface{}{
+		"version": ssgVersion,
+		"url":     ssgURL,
+	}).Info("Downloading SSG from GitHub...")
+
+	// Create temp directory
+	tmpDir, err := os.MkdirTemp("", "ssg-upgrade-")
+	if err != nil {
+		return fmt.Errorf("failed to create temp directory: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	zipPath := filepath.Join(tmpDir, "ssg.zip")
+
+	// Download the zip file
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	if err := s.downloadFile(ctx, ssgURL, zipPath); err != nil {
+		return fmt.Errorf("failed to download SSG: %w", err)
+	}
+
+	s.logger.Info("Extracting SSG content...")
+
+	// Extract the zip file
+	extractDir := filepath.Join(tmpDir, "extracted")
+	if err := s.extractZip(zipPath, extractDir); err != nil {
+		return fmt.Errorf("failed to extract SSG: %w", err)
+	}
+
+	// Find the content directory in the extracted files
+	contentSrcDir := filepath.Join(extractDir, "scap-security-guide-"+ssgVersion)
+	if _, err := os.Stat(contentSrcDir); os.IsNotExist(err) {
+		// Try without version suffix
+		entries, _ := os.ReadDir(extractDir)
+		for _, e := range entries {
+			if e.IsDir() && strings.HasPrefix(e.Name(), "scap-security-guide") {
+				contentSrcDir = filepath.Join(extractDir, e.Name())
+				break
+			}
+		}
+	}
+
+	// Ensure target directory exists
+	targetDir := scapContentDir
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return fmt.Errorf("failed to create content directory: %w", err)
+	}
+
+	// Copy all XML files (datastream files) to the target directory
+	s.logger.WithField("target", targetDir).Info("Installing SSG content files...")
+
+	xmlFiles, err := filepath.Glob(filepath.Join(contentSrcDir, "*.xml"))
+	if err != nil {
+		return fmt.Errorf("failed to find XML files: %w", err)
+	}
+
+	if len(xmlFiles) == 0 {
+		// Try looking in subdirectories
+		xmlFiles, _ = filepath.Glob(filepath.Join(contentSrcDir, "*", "*.xml"))
+	}
+
+	copiedCount := 0
+	for _, src := range xmlFiles {
+		baseName := filepath.Base(src)
+		// Only copy datastream files (ssg-*-ds.xml)
+		if strings.HasPrefix(baseName, "ssg-") && strings.HasSuffix(baseName, "-ds.xml") {
+			dst := filepath.Join(targetDir, baseName)
+			if err := s.copyFile(src, dst); err != nil {
+				s.logger.WithError(err).WithField("file", baseName).Warn("Failed to copy content file")
+			} else {
+				copiedCount++
+			}
+		}
+	}
+
+	if copiedCount == 0 {
+		return fmt.Errorf("no SSG content files were installed")
+	}
+
+	s.logger.WithField("files_installed", copiedCount).Info("SSG content files installed successfully")
+
+	// Create a version marker file
+	versionFile := filepath.Join(targetDir, ".ssg-version")
+	os.WriteFile(versionFile, []byte(ssgVersion+"\n"), 0644)
+
+	return nil
+}
+
+// downloadFile downloads a file from a URL
+func (s *OpenSCAPScanner) downloadFile(ctx context.Context, url, destPath string) error {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return err
+	}
+
+	client := &http.Client{
+		Timeout: 5 * time.Minute,
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP error: %s", resp.Status)
+	}
+
+	out, err := os.Create(destPath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, resp.Body)
+	return err
+}
+
+// extractZip extracts a zip file to a directory
+func (s *OpenSCAPScanner) extractZip(zipPath, destDir string) error {
+	r, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		return err
+	}
+
+	for _, f := range r.File {
+		fpath := filepath.Join(destDir, f.Name)
+
+		// Check for ZipSlip vulnerability
+		if !strings.HasPrefix(fpath, filepath.Clean(destDir)+string(os.PathSeparator)) {
+			return fmt.Errorf("invalid file path: %s", fpath)
+		}
+
+		if f.FileInfo().IsDir() {
+			os.MkdirAll(fpath, f.Mode())
+			continue
+		}
+
+		if err := os.MkdirAll(filepath.Dir(fpath), 0755); err != nil {
+			return err
+		}
+
+		outFile, err := os.OpenFile(fpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+		if err != nil {
+			return err
+		}
+
+		rc, err := f.Open()
+		if err != nil {
+			outFile.Close()
+			return err
+		}
+
+		_, err = io.Copy(outFile, rc)
+		outFile.Close()
+		rc.Close()
+
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// copyFile copies a file from src to dst
+func (s *OpenSCAPScanner) copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, in)
+	if err != nil {
+		return err
+	}
+
+	return out.Chmod(0644)
+}
+
+// getInstalledSSGVersion reads the version from the marker file
+func (s *OpenSCAPScanner) getInstalledSSGVersion() string {
+	versionFile := filepath.Join(scapContentDir, ".ssg-version")
+	data, err := os.ReadFile(versionFile)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }
 
 // checkAvailability checks if OpenSCAP is installed and has content
