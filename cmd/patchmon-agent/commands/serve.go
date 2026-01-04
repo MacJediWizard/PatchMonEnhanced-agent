@@ -306,7 +306,41 @@ func runService() error {
 func upgradeSSGContent() error {
 	// Create compliance integration to access the OpenSCAP scanner
 	complianceInteg := compliance.New(logger)
-	return complianceInteg.UpgradeSSGContent()
+	if err := complianceInteg.UpgradeSSGContent(); err != nil {
+		return err
+	}
+
+	// Send updated status to backend after successful upgrade
+	logger.Info("Sending updated compliance status to backend...")
+	httpClient := client.New(cfgManager, logger)
+	ctx := context.Background()
+
+	// Get new scanner details
+	openscapScanner := compliance.NewOpenSCAPScanner(logger)
+	scannerDetails := openscapScanner.GetScannerDetails()
+
+	// Check if Docker integration is enabled for Docker Bench info
+	dockerIntegrationEnabled := cfgManager.IsIntegrationEnabled("docker")
+	if dockerIntegrationEnabled {
+		dockerBenchScanner := compliance.NewDockerBenchScanner(logger)
+		scannerDetails.DockerBenchAvailable = dockerBenchScanner.IsAvailable()
+	}
+
+	// Send updated status
+	if err := httpClient.SendIntegrationSetupStatus(ctx, &models.IntegrationSetupStatus{
+		Integration: "compliance",
+		Enabled:     cfgManager.IsIntegrationEnabled("compliance"),
+		Status:      "ready",
+		Message:     "SSG content upgraded successfully",
+		ScannerInfo: scannerDetails,
+	}); err != nil {
+		logger.WithError(err).Warn("Failed to send updated compliance status")
+		// Don't fail the upgrade just because status update failed
+	} else {
+		logger.Info("Updated compliance status sent to backend")
+	}
+
+	return nil
 }
 
 // startIntegrationMonitoring starts real-time monitoring for integrations that support it
