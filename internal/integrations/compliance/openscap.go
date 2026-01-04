@@ -79,6 +79,80 @@ func (s *OpenSCAPScanner) GetOSInfo() models.ComplianceOSInfo {
 	return s.osInfo
 }
 
+// GetContentFile returns the path to the content file being used
+func (s *OpenSCAPScanner) GetContentFilePath() string {
+	return s.getContentFile()
+}
+
+// GetContentPackageVersion returns the ssg-base package version
+func (s *OpenSCAPScanner) GetContentPackageVersion() string {
+	var cmd *exec.Cmd
+
+	switch s.osInfo.Family {
+	case "debian":
+		cmd = exec.Command("dpkg-query", "-W", "-f=${Version}", "ssg-base")
+	case "rhel":
+		cmd = exec.Command("rpm", "-q", "--qf", "%{VERSION}-%{RELEASE}", "scap-security-guide")
+	case "suse":
+		cmd = exec.Command("rpm", "-q", "--qf", "%{VERSION}-%{RELEASE}", "scap-security-guide")
+	default:
+		return ""
+	}
+
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
+}
+
+// GetScannerDetails returns comprehensive scanner information
+func (s *OpenSCAPScanner) GetScannerDetails() *models.ComplianceScannerDetails {
+	contentFile := s.getContentFile()
+	contentVersion := s.GetContentPackageVersion()
+
+	// Check for content mismatch
+	contentMismatch := false
+	mismatchWarning := ""
+	if contentFile != "" && s.osInfo.Version != "" {
+		osVersion := strings.ReplaceAll(s.osInfo.Version, ".", "")
+		baseName := filepath.Base(contentFile)
+		if !strings.Contains(baseName, osVersion) {
+			contentMismatch = true
+			mismatchWarning = fmt.Sprintf("Content file %s may not match OS version %s. Consider upgrading ssg-base package.", baseName, s.osInfo.Version)
+		}
+	}
+
+	// Build available profiles list
+	profiles := []models.ScanProfileInfo{
+		{
+			ID:          "level1_server",
+			Name:        "CIS Level 1 Server",
+			Description: "Basic security hardening for servers",
+			Type:        "openscap",
+		},
+		{
+			ID:          "level2_server",
+			Name:        "CIS Level 2 Server",
+			Description: "Extended security hardening (more restrictive)",
+			Type:        "openscap",
+		},
+	}
+
+	return &models.ComplianceScannerDetails{
+		OpenSCAPVersion:   s.version,
+		OpenSCAPAvailable: s.available,
+		ContentFile:       filepath.Base(contentFile),
+		ContentPackage:    fmt.Sprintf("ssg-base %s", contentVersion),
+		AvailableProfiles: profiles,
+		OSName:            s.osInfo.Name,
+		OSVersion:         s.osInfo.Version,
+		OSFamily:          s.osInfo.Family,
+		ContentMismatch:   contentMismatch,
+		MismatchWarning:   mismatchWarning,
+	}
+}
+
 // EnsureInstalled installs OpenSCAP and SCAP content if not present
 // Also upgrades existing packages to ensure latest content is available
 func (s *OpenSCAPScanner) EnsureInstalled() error {

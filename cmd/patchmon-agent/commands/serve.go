@@ -600,6 +600,34 @@ func toggleIntegration(integrationName string, enabled bool) error {
 				statusMessage = "Some compliance tools failed to install"
 			}
 
+			// Get detailed scanner info to send with status
+			scannerDetails := openscapScanner.GetScannerDetails()
+
+			// Add Docker Bench info if available
+			if dockerIntegrationEnabled {
+				dockerBenchScanner := compliance.NewDockerBenchScanner(logger)
+				scannerDetails.DockerBenchAvailable = dockerBenchScanner.IsAvailable()
+				if scannerDetails.DockerBenchAvailable {
+					scannerDetails.AvailableProfiles = append(scannerDetails.AvailableProfiles, models.ScanProfileInfo{
+						ID:          "docker-bench",
+						Name:        "Docker Bench for Security",
+						Description: "CIS Docker Benchmark security checks",
+						Type:        "docker-bench",
+					})
+				}
+			}
+
+			// Send final status with scanner info
+			httpClient.SendIntegrationSetupStatus(ctx, &models.IntegrationSetupStatus{
+				Integration: "compliance",
+				Enabled:     enabled,
+				Status:      overallStatus,
+				Message:     statusMessage,
+				Components:  components,
+				ScannerInfo: scannerDetails,
+			})
+			return nil // Skip the generic status send below
+
 		} else {
 			logger.Info("Compliance disabled - removing tools...")
 			overallStatus = "removing"
@@ -636,16 +664,16 @@ func toggleIntegration(integrationName string, enabled bool) error {
 			overallStatus = "disabled"
 			statusMessage = "Compliance disabled and tools removed"
 			logger.Info("Compliance cleanup complete")
-		}
 
-		// Send final status update
-		httpClient.SendIntegrationSetupStatus(ctx, &models.IntegrationSetupStatus{
-			Integration: "compliance",
-			Enabled:     enabled,
-			Status:      overallStatus,
-			Message:     statusMessage,
-			Components:  components,
-		})
+			// Send final status update for disable
+			httpClient.SendIntegrationSetupStatus(ctx, &models.IntegrationSetupStatus{
+				Integration: "compliance",
+				Enabled:     enabled,
+				Status:      overallStatus,
+				Message:     statusMessage,
+				Components:  components,
+			})
+		}
 	}
 
 	// Update config.yml

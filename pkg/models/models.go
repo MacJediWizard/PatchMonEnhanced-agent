@@ -166,11 +166,47 @@ type IntegrationStatusResponse struct {
 
 // IntegrationSetupStatus represents the setup status of an integration
 type IntegrationSetupStatus struct {
-	Integration string                 `json:"integration"`
-	Enabled     bool                   `json:"enabled"`
-	Status      string                 `json:"status"` // "ready", "installing", "removing", "error"
-	Message     string                 `json:"message"`
-	Components  map[string]string      `json:"components,omitempty"` // Component name -> status
+	Integration string                    `json:"integration"`
+	Enabled     bool                      `json:"enabled"`
+	Status      string                    `json:"status"` // "ready", "installing", "removing", "error"
+	Message     string                    `json:"message"`
+	Components  map[string]string         `json:"components,omitempty"` // Component name -> status
+	ScannerInfo *ComplianceScannerDetails `json:"scanner_info,omitempty"`
+}
+
+// ComplianceScannerDetails contains detailed OpenSCAP scanner information
+type ComplianceScannerDetails struct {
+	// OpenSCAP info
+	OpenSCAPVersion   string `json:"openscap_version,omitempty"`
+	OpenSCAPAvailable bool   `json:"openscap_available"`
+
+	// SCAP Content info
+	ContentFile    string `json:"content_file,omitempty"`
+	ContentPackage string `json:"content_package,omitempty"` // e.g., "ssg-base 0.1.76"
+
+	// Available scan profiles
+	AvailableProfiles []ScanProfileInfo `json:"available_profiles,omitempty"`
+
+	// Docker Bench info
+	DockerBenchAvailable bool   `json:"docker_bench_available"`
+	DockerBenchVersion   string `json:"docker_bench_version,omitempty"`
+
+	// OS info for content matching
+	OSName    string `json:"os_name,omitempty"`
+	OSVersion string `json:"os_version,omitempty"`
+	OSFamily  string `json:"os_family,omitempty"`
+
+	// Content compatibility
+	ContentMismatch bool   `json:"content_mismatch,omitempty"`
+	MismatchWarning string `json:"mismatch_warning,omitempty"`
+}
+
+// ScanProfileInfo describes an available scan profile
+type ScanProfileInfo struct {
+	ID          string `json:"id"`          // Internal ID (e.g., "level1_server")
+	Name        string `json:"name"`        // Display name (e.g., "CIS Level 1 Server")
+	Description string `json:"description"` // Brief description
+	Type        string `json:"type"`        // "openscap" or "docker-bench"
 }
 
 // Credentials holds API authentication information
