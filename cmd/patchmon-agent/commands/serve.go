@@ -270,11 +270,12 @@ func runService() error {
 			case "compliance_scan":
 				logger.WithFields(map[string]interface{}{
 					"profile_type":       m.profileType,
+					"profile_id":         m.profileID,
 					"enable_remediation": m.enableRemediation,
 				}).Info("Running on-demand compliance scan...")
 				go func(msg wsMsg) {
 					options := &models.ComplianceScanOptions{
-						ProfileID:            msg.profileType,
+						ProfileID:            msg.profileID,
 						EnableRemediation:    msg.enableRemediation,
 						FetchRemoteResources: msg.fetchRemoteResources,
 					}
@@ -379,6 +380,7 @@ type wsMsg struct {
 	integrationName      string
 	integrationEnabled   bool
 	profileType          string // For compliance_scan: openscap, docker-bench, all
+	profileID            string // For compliance_scan: specific XCCDF profile ID
 	enableRemediation    bool   // For compliance_scan: enable auto-remediation
 	fetchRemoteResources bool   // For compliance_scan: fetch remote resources
 }
@@ -542,6 +544,7 @@ func connectOnce(out chan<- wsMsg, dockerEvents <-chan interface{}) error {
 			Integration          string `json:"integration"`
 			Enabled              bool   `json:"enabled"`
 			ProfileType          string `json:"profile_type"`           // For compliance_scan
+			ProfileID            string `json:"profile_id"`             // For compliance_scan: specific XCCDF profile ID
 			EnableRemediation    bool   `json:"enable_remediation"`     // For compliance_scan
 			FetchRemoteResources bool   `json:"fetch_remote_resources"` // For compliance_scan
 		}
@@ -588,11 +591,13 @@ func connectOnce(out chan<- wsMsg, dockerEvents <-chan interface{}) error {
 				}
 				logger.WithFields(map[string]interface{}{
 					"profile_type":       profileType,
+					"profile_id":         payload.ProfileID,
 					"enable_remediation": payload.EnableRemediation,
 				}).Info("compliance_scan received")
 				out <- wsMsg{
 					kind:                 "compliance_scan",
 					profileType:          profileType,
+					profileID:            payload.ProfileID,
 					enableRemediation:    payload.EnableRemediation,
 					fetchRemoteResources: payload.FetchRemoteResources,
 				}
