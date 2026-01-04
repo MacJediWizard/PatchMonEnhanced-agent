@@ -996,8 +996,8 @@ func (s *OpenSCAPScanner) RunScanWithOptions(ctx context.Context, options *model
 		}
 	}
 
-	// Parse results (pass oscap output for additional context)
-	scan, err := s.parseResults(resultsPath, options.ProfileID, string(output))
+	// Parse results (pass oscap output and content file for metadata)
+	scan, err := s.parseResults(resultsPath, contentFile, options.ProfileID, string(output))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse results: %w", err)
 	}
@@ -1093,14 +1093,14 @@ type ruleMetadata struct {
 	Section     string
 }
 
-// parseResults parses the XCCDF results file and extracts rich metadata
-func (s *OpenSCAPScanner) parseResults(resultsPath string, profileName string, oscapOutput string) (*models.ComplianceScan, error) {
+// parseResults parses the XCCDF results file and extracts rich metadata from the benchmark
+func (s *OpenSCAPScanner) parseResults(resultsPath string, contentFile string, profileName string, oscapOutput string) (*models.ComplianceScan, error) {
 	data, err := os.ReadFile(resultsPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read results: %w", err)
 	}
 
-	content := string(data)
+	resultsContent := string(data)
 
 	// Extract TestResult section (simplified parsing)
 	scan := &models.ComplianceScan{
@@ -1109,8 +1109,24 @@ func (s *OpenSCAPScanner) parseResults(resultsPath string, profileName string, o
 		Results:     make([]models.ComplianceResult, 0),
 	}
 
-	// First, extract rule metadata from the embedded benchmark (Rule definitions)
-	ruleMetadataMap := s.extractRuleMetadata(content)
+	// Extract rule metadata from the BENCHMARK file (not results file)
+	// The benchmark file (ssg-*-ds.xml) contains Rule definitions with title, description, etc.
+	benchmarkContent := ""
+	if contentFile != "" {
+		if benchmarkData, err := os.ReadFile(contentFile); err == nil {
+			benchmarkContent = string(benchmarkData)
+			s.logger.WithField("content_file", contentFile).Debug("Loaded benchmark file for metadata extraction")
+		} else {
+			s.logger.WithError(err).Warn("Failed to read benchmark file for metadata")
+		}
+	}
+
+	// Try results file first (might have embedded benchmark), then fall back to benchmark file
+	ruleMetadataMap := s.extractRuleMetadata(resultsContent)
+	if len(ruleMetadataMap) == 0 && benchmarkContent != "" {
+		s.logger.Debug("No metadata in results file, extracting from benchmark")
+		ruleMetadataMap = s.extractRuleMetadata(benchmarkContent)
+	}
 
 	// Parse oscap output for rule-specific failure details
 	// oscap output format: "Title	rule_id	result"
@@ -1123,7 +1139,7 @@ func (s *OpenSCAPScanner) parseResults(resultsPath string, profileName string, o
 	resultPattern := regexp.MustCompile(`<result>([^<]+)</result>`)
 	messagePattern := regexp.MustCompile(`<message[^>]*>([^<]+)</message>`)
 
-	matches := ruleResultPattern.FindAllStringSubmatch(content, -1)
+	matches := ruleResultPattern.FindAllStringSubmatch(resultsContent, -1)
 
 	for _, match := range matches {
 		if len(match) >= 3 {
