@@ -227,6 +227,29 @@ func (s *OpenSCAPScanner) GetScannerDetails() *models.ComplianceScannerDetails {
 	contentFile := s.getContentFile()
 	contentVersion := s.GetContentPackageVersion()
 
+	// Determine minimum required SSG version for this OS
+	minVersion := ""
+	if s.osInfo.Name == "ubuntu" && s.osInfo.Version >= "24.04" {
+		minVersion = "0.1.76"
+	} else if s.osInfo.Name == "ubuntu" && s.osInfo.Version >= "22.04" {
+		minVersion = "0.1.60"
+	}
+
+	// Check if SSG needs upgrade
+	ssgNeedsUpgrade := false
+	ssgUpgradeMessage := ""
+	if minVersion != "" && contentVersion != "" {
+		if compareVersions(contentVersion, minVersion) < 0 {
+			ssgNeedsUpgrade = true
+			ssgUpgradeMessage = fmt.Sprintf("ssg-base %s is installed, but %s %s requires v%s+ for proper CIS/STIG content.",
+				contentVersion, s.osInfo.Name, s.osInfo.Version, minVersion)
+		}
+	} else if minVersion != "" && contentVersion == "" {
+		ssgNeedsUpgrade = true
+		ssgUpgradeMessage = fmt.Sprintf("ssg-base is not installed. %s %s requires ssg-base v%s+ for CIS/STIG scanning.",
+			s.osInfo.Name, s.osInfo.Version, minVersion)
+	}
+
 	// Check for content mismatch
 	contentMismatch := false
 	mismatchWarning := ""
@@ -235,16 +258,18 @@ func (s *OpenSCAPScanner) GetScannerDetails() *models.ComplianceScannerDetails {
 		baseName := filepath.Base(contentFile)
 		if !strings.Contains(baseName, osVersion) {
 			contentMismatch = true
-			// Provide more specific guidance for Ubuntu 24.04+
-			if s.osInfo.Name == "ubuntu" && s.osInfo.Version >= "24.04" {
-				mismatchWarning = fmt.Sprintf("Content file %s does not match Ubuntu %s. Upgrade ssg-base to v0.1.76+ for Ubuntu 24.04 CIS/STIG content, or use Canonical's Ubuntu Security Guide (USG) with Ubuntu Pro.", baseName, s.osInfo.Version)
+			if ssgNeedsUpgrade {
+				mismatchWarning = ssgUpgradeMessage
 			} else {
-				mismatchWarning = fmt.Sprintf("Content file %s may not match OS version %s. Consider upgrading ssg-base package.", baseName, s.osInfo.Version)
+				mismatchWarning = fmt.Sprintf("Content file %s may not match OS version %s.", baseName, s.osInfo.Version)
 			}
 		}
 	} else if contentFile == "" && s.osInfo.Name == "ubuntu" && s.osInfo.Version >= "24.04" {
 		contentMismatch = true
-		mismatchWarning = "No SCAP content found for Ubuntu 24.04. Ensure ssg-base v0.1.76+ is installed, or use Canonical's Ubuntu Security Guide (USG) with Ubuntu Pro."
+		mismatchWarning = ssgUpgradeMessage
+		if mismatchWarning == "" {
+			mismatchWarning = "No SCAP content found for Ubuntu 24.04."
+		}
 	}
 
 	// Discover available profiles dynamically
@@ -255,6 +280,10 @@ func (s *OpenSCAPScanner) GetScannerDetails() *models.ComplianceScannerDetails {
 		OpenSCAPAvailable: s.available,
 		ContentFile:       filepath.Base(contentFile),
 		ContentPackage:    fmt.Sprintf("ssg-base %s", contentVersion),
+		SSGVersion:        contentVersion,
+		SSGMinVersion:     minVersion,
+		SSGNeedsUpgrade:   ssgNeedsUpgrade,
+		SSGUpgradeMessage: ssgUpgradeMessage,
 		AvailableProfiles: profiles,
 		OSName:            s.osInfo.Name,
 		OSVersion:         s.osInfo.Version,
@@ -262,6 +291,35 @@ func (s *OpenSCAPScanner) GetScannerDetails() *models.ComplianceScannerDetails {
 		ContentMismatch:   contentMismatch,
 		MismatchWarning:   mismatchWarning,
 	}
+}
+
+// compareVersions compares two semantic version strings
+// Returns -1 if v1 < v2, 0 if equal, 1 if v1 > v2
+func compareVersions(v1, v2 string) int {
+	parts1 := strings.Split(v1, ".")
+	parts2 := strings.Split(v2, ".")
+
+	maxLen := len(parts1)
+	if len(parts2) > maxLen {
+		maxLen = len(parts2)
+	}
+
+	for i := 0; i < maxLen; i++ {
+		var n1, n2 int
+		if i < len(parts1) {
+			fmt.Sscanf(parts1[i], "%d", &n1)
+		}
+		if i < len(parts2) {
+			fmt.Sscanf(parts2[i], "%d", &n2)
+		}
+		if n1 < n2 {
+			return -1
+		}
+		if n1 > n2 {
+			return 1
+		}
+	}
+	return 0
 }
 
 // EnsureInstalled installs OpenSCAP and SCAP content if not present
@@ -427,6 +485,102 @@ func (s *OpenSCAPScanner) checkContentCompatibility() {
 			"content_file": baseName,
 		}).Warn("SCAP content may not match OS version - scan results may show many 'notapplicable' rules. Consider updating ssg-base package.")
 	}
+}
+
+// UpgradeSSGContent upgrades the SCAP Security Guide content packages to the latest version
+func (s *OpenSCAPScanner) UpgradeSSGContent() error {
+	s.logger.Info("Upgrading SCAP Security Guide content packages...")
+
+	// Create context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	// Environment for non-interactive apt operations
+	nonInteractiveEnv := append(os.Environ(),
+		"DEBIAN_FRONTEND=noninteractive",
+		"NEEDRESTART_MODE=a",
+		"NEEDRESTART_SUSPEND=1",
+	)
+
+	switch s.osInfo.Family {
+	case "debian":
+		// Update package cache first
+		s.logger.Info("Updating package cache...")
+		updateCmd := exec.CommandContext(ctx, "apt-get", "update", "-qq")
+		updateCmd.Env = nonInteractiveEnv
+		updateCmd.Run() // Ignore errors on update
+
+		// Upgrade ssg-base and ssg-debderived packages
+		s.logger.Info("Upgrading ssg-base and ssg-debderived packages...")
+		upgradeCmd := exec.CommandContext(ctx, "apt-get", "install", "-y", "-qq",
+			"-o", "Dpkg::Options::=--force-confdef",
+			"-o", "Dpkg::Options::=--force-confold",
+			"--only-upgrade",
+			"ssg-base", "ssg-debderived")
+		upgradeCmd.Env = nonInteractiveEnv
+		output, err := upgradeCmd.CombinedOutput()
+		if err != nil {
+			// Try install instead of upgrade (in case packages weren't installed)
+			s.logger.Debug("Upgrade failed, trying fresh install...")
+			installCmd := exec.CommandContext(ctx, "apt-get", "install", "-y", "-qq",
+				"-o", "Dpkg::Options::=--force-confdef",
+				"-o", "Dpkg::Options::=--force-confold",
+				"ssg-base", "ssg-debderived")
+			installCmd.Env = nonInteractiveEnv
+			output, err = installCmd.CombinedOutput()
+			if err != nil {
+				if ctx.Err() == context.DeadlineExceeded {
+					return fmt.Errorf("SSG upgrade timed out after 5 minutes")
+				}
+				s.logger.WithError(err).WithField("output", string(output)).Warn("Failed to upgrade SSG packages")
+				return fmt.Errorf("failed to upgrade SSG packages: %w\nOutput: %s", err, string(output))
+			}
+		}
+
+		// Get new version
+		newVersion := s.GetContentPackageVersion()
+		s.logger.WithField("version", newVersion).Info("SSG content packages upgraded successfully")
+
+	case "rhel":
+		s.logger.Info("Upgrading scap-security-guide package...")
+		var upgradeCmd *exec.Cmd
+		if _, err := exec.LookPath("dnf"); err == nil {
+			upgradeCmd = exec.CommandContext(ctx, "dnf", "upgrade", "-y", "-q", "scap-security-guide")
+		} else {
+			upgradeCmd = exec.CommandContext(ctx, "yum", "update", "-y", "-q", "scap-security-guide")
+		}
+		output, err := upgradeCmd.CombinedOutput()
+		if err != nil {
+			if ctx.Err() == context.DeadlineExceeded {
+				return fmt.Errorf("SSG upgrade timed out after 5 minutes")
+			}
+			s.logger.WithError(err).WithField("output", string(output)).Warn("Failed to upgrade SSG package")
+			return fmt.Errorf("failed to upgrade SSG package: %w\nOutput: %s", err, string(output))
+		}
+		s.logger.Info("SSG content package upgraded successfully")
+
+	case "suse":
+		s.logger.Info("Upgrading scap-security-guide package...")
+		upgradeCmd := exec.CommandContext(ctx, "zypper", "--non-interactive", "update", "scap-security-guide")
+		output, err := upgradeCmd.CombinedOutput()
+		if err != nil {
+			if ctx.Err() == context.DeadlineExceeded {
+				return fmt.Errorf("SSG upgrade timed out after 5 minutes")
+			}
+			s.logger.WithError(err).WithField("output", string(output)).Warn("Failed to upgrade SSG package")
+			return fmt.Errorf("failed to upgrade SSG package: %w\nOutput: %s", err, string(output))
+		}
+		s.logger.Info("SSG content package upgraded successfully")
+
+	default:
+		return fmt.Errorf("unsupported OS family for SSG upgrade: %s", s.osInfo.Family)
+	}
+
+	// Re-check availability after upgrade
+	s.checkAvailability()
+	s.checkContentCompatibility()
+
+	return nil
 }
 
 // checkAvailability checks if OpenSCAP is installed and has content

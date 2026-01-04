@@ -181,8 +181,12 @@ type ComplianceScannerDetails struct {
 	OpenSCAPAvailable bool   `json:"openscap_available"`
 
 	// SCAP Content info
-	ContentFile    string `json:"content_file,omitempty"`
-	ContentPackage string `json:"content_package,omitempty"` // e.g., "ssg-base 0.1.76"
+	ContentFile       string `json:"content_file,omitempty"`
+	ContentPackage    string `json:"content_package,omitempty"`     // e.g., "ssg-base 0.1.76"
+	SSGVersion        string `json:"ssg_version,omitempty"`         // Just the version number (e.g., "0.1.76")
+	SSGMinVersion     string `json:"ssg_min_version,omitempty"`     // Minimum required version for this OS
+	SSGNeedsUpgrade   bool   `json:"ssg_needs_upgrade,omitempty"`   // True if upgrade is recommended
+	SSGUpgradeMessage string `json:"ssg_upgrade_message,omitempty"` // Message explaining why upgrade is needed
 
 	// Available scan profiles
 	AvailableProfiles []ScanProfileInfo `json:"available_profiles,omitempty"`

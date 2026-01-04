@@ -173,3 +173,11 @@ func (c *Integration) CollectWithOptions(ctx context.Context, options *models.Co
 		ExecutionTime: executionTime,
 	}, nil
 }
+
+// UpgradeSSGContent upgrades the SCAP Security Guide content packages
+func (c *Integration) UpgradeSSGContent() error {
+	if c.openscap == nil {
+		return fmt.Errorf("OpenSCAP scanner not initialized")
+	}
+	return c.openscap.UpgradeSSGContent()
+}

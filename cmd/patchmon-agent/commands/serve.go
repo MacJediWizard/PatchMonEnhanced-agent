@@ -288,9 +288,25 @@ func runService() error {
 						}
 					}
 				}(m)
+			case "upgrade_ssg":
+				logger.Info("Upgrading SSG content packages...")
+				go func() {
+					if err := upgradeSSGContent(); err != nil {
+						logger.WithError(err).Warn("upgrade_ssg failed")
+					} else {
+						logger.Info("SSG content packages upgraded successfully")
+					}
+				}()
 			}
 		}
 	}
+}
+
+// upgradeSSGContent upgrades the SCAP Security Guide content packages
+func upgradeSSGContent() error {
+	// Create compliance integration to access the OpenSCAP scanner
+	complianceInteg := compliance.New(logger)
+	return complianceInteg.UpgradeSSGContent()
 }
 
 // startIntegrationMonitoring starts real-time monitoring for integrations that support it
@@ -541,6 +557,9 @@ func connectOnce(out chan<- wsMsg, dockerEvents <-chan interface{}) error {
 					enableRemediation:    payload.EnableRemediation,
 					fetchRemoteResources: payload.FetchRemoteResources,
 				}
+			case "upgrade_ssg":
+				logger.Info("upgrade_ssg received")
+				out <- wsMsg{kind: "upgrade_ssg"}
 			}
 		}
 	}
