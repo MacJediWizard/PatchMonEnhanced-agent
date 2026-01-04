@@ -1073,12 +1073,24 @@ type xccdfRuleResult struct {
 	Result string `xml:"result"`
 }
 
-// parseResults parses the XCCDF results file
+// ruleMetadata holds extracted rule information from the benchmark
+type ruleMetadata struct {
+	Title       string
+	Description string
+	Rationale   string
+	Severity    string
+	Remediation string
+	Section     string
+}
+
+// parseResults parses the XCCDF results file and extracts rich metadata
 func (s *OpenSCAPScanner) parseResults(resultsPath string, profileName string) (*models.ComplianceScan, error) {
 	data, err := os.ReadFile(resultsPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read results: %w", err)
 	}
+
+	content := string(data)
 
 	// Extract TestResult section (simplified parsing)
 	scan := &models.ComplianceScan{
@@ -1087,17 +1099,36 @@ func (s *OpenSCAPScanner) parseResults(resultsPath string, profileName string) (
 		Results:     make([]models.ComplianceResult, 0),
 	}
 
-	// Parse rule results using regex (more robust than full XML parsing)
-	rulePattern := regexp.MustCompile(`<rule-result[^>]*idref="([^"]+)"[^>]*>[\s\S]*?<result>([^<]+)</result>[\s\S]*?</rule-result>`)
-	matches := rulePattern.FindAllStringSubmatch(string(data), -1)
+	// First, extract rule metadata from the embedded benchmark (Rule definitions)
+	ruleMetadataMap := s.extractRuleMetadata(content)
+
+	// Parse rule results with optional message element
+	// Pattern captures: idref, full rule-result block content
+	ruleResultPattern := regexp.MustCompile(`<rule-result[^>]*idref="([^"]+)"[^>]*>([\s\S]*?)</rule-result>`)
+	resultPattern := regexp.MustCompile(`<result>([^<]+)</result>`)
+	messagePattern := regexp.MustCompile(`<message[^>]*>([^<]+)</message>`)
+
+	matches := ruleResultPattern.FindAllStringSubmatch(content, -1)
 
 	for _, match := range matches {
 		if len(match) >= 3 {
 			ruleID := match[1]
-			result := strings.TrimSpace(match[2])
+			ruleResultContent := match[2]
 
-			// Map result to our status
+			// Extract result status
+			resultMatch := resultPattern.FindStringSubmatch(ruleResultContent)
+			if len(resultMatch) < 2 {
+				continue
+			}
+			result := strings.TrimSpace(resultMatch[1])
 			status := s.mapResult(result)
+
+			// Extract message if present (contains specific check output for failures)
+			var finding string
+			messageMatch := messagePattern.FindStringSubmatch(ruleResultContent)
+			if len(messageMatch) >= 2 {
+				finding = strings.TrimSpace(messageMatch[1])
+			}
 
 			// Update counters
 			switch status {
@@ -1114,13 +1145,24 @@ func (s *OpenSCAPScanner) parseResults(resultsPath string, profileName string) (
 			}
 			scan.TotalRules++
 
-			// Extract title from rule ID
-			title := s.extractTitle(ruleID)
+			// Get metadata from embedded benchmark
+			metadata := ruleMetadataMap[ruleID]
+
+			// Use extracted title or fall back to generated one
+			title := metadata.Title
+			if title == "" {
+				title = s.extractTitle(ruleID)
+			}
 
 			scan.Results = append(scan.Results, models.ComplianceResult{
-				RuleID: ruleID,
-				Title:  title,
-				Status: status,
+				RuleID:      ruleID,
+				Title:       title,
+				Status:      status,
+				Finding:     finding,
+				Description: metadata.Description,
+				Severity:    metadata.Severity,
+				Remediation: metadata.Remediation,
+				Section:     metadata.Section,
 			})
 		}
 	}
@@ -1134,6 +1176,140 @@ func (s *OpenSCAPScanner) parseResults(resultsPath string, profileName string) (
 	}
 
 	return scan, nil
+}
+
+// extractRuleMetadata extracts rule definitions from the embedded benchmark in XCCDF results
+func (s *OpenSCAPScanner) extractRuleMetadata(content string) map[string]ruleMetadata {
+	metadata := make(map[string]ruleMetadata)
+
+	// Pattern to match Rule elements with their content
+	// XCCDF Rule elements contain id attribute and child elements for title, description, etc.
+	rulePattern := regexp.MustCompile(`<(?:xccdf(?:-\d+\.\d+)?:)?Rule[^>]*id="([^"]+)"[^>]*severity="([^"]*)"[^>]*>([\s\S]*?)</(?:xccdf(?:-\d+\.\d+)?:)?Rule>`)
+	titlePattern := regexp.MustCompile(`<(?:xccdf(?:-\d+\.\d+)?:)?title[^>]*>([^<]+)</(?:xccdf(?:-\d+\.\d+)?:)?title>`)
+	descPattern := regexp.MustCompile(`<(?:xccdf(?:-\d+\.\d+)?:)?description[^>]*>([\s\S]*?)</(?:xccdf(?:-\d+\.\d+)?:)?description>`)
+	rationalePattern := regexp.MustCompile(`<(?:xccdf(?:-\d+\.\d+)?:)?rationale[^>]*>([\s\S]*?)</(?:xccdf(?:-\d+\.\d+)?:)?rationale>`)
+	fixPattern := regexp.MustCompile(`<(?:xccdf(?:-\d+\.\d+)?:)?fix[^>]*>([\s\S]*?)</(?:xccdf(?:-\d+\.\d+)?:)?fix>`)
+
+	matches := rulePattern.FindAllStringSubmatch(content, -1)
+
+	for _, match := range matches {
+		if len(match) >= 4 {
+			ruleID := match[1]
+			severity := match[2]
+			ruleContent := match[3]
+
+			meta := ruleMetadata{
+				Severity: severity,
+			}
+
+			// Extract title
+			if titleMatch := titlePattern.FindStringSubmatch(ruleContent); len(titleMatch) >= 2 {
+				meta.Title = s.cleanXMLText(titleMatch[1])
+			}
+
+			// Extract description
+			if descMatch := descPattern.FindStringSubmatch(ruleContent); len(descMatch) >= 2 {
+				meta.Description = s.cleanXMLText(descMatch[1])
+			}
+
+			// Extract rationale (append to description if present)
+			if ratMatch := rationalePattern.FindStringSubmatch(ruleContent); len(ratMatch) >= 2 {
+				rationale := s.cleanXMLText(ratMatch[1])
+				if rationale != "" {
+					if meta.Description != "" {
+						meta.Description = meta.Description + "\n\nRationale: " + rationale
+					} else {
+						meta.Description = "Rationale: " + rationale
+					}
+				}
+			}
+
+			// Extract fix/remediation
+			if fixMatch := fixPattern.FindStringSubmatch(ruleContent); len(fixMatch) >= 2 {
+				meta.Remediation = s.cleanXMLText(fixMatch[1])
+			}
+
+			// Extract section from rule ID (e.g., "1.1.1" from rule naming)
+			meta.Section = s.extractSection(ruleID)
+
+			metadata[ruleID] = meta
+		}
+	}
+
+	// If we didn't find Rules with severity attribute, try without it
+	if len(metadata) == 0 {
+		rulePatternSimple := regexp.MustCompile(`<(?:xccdf(?:-\d+\.\d+)?:)?Rule[^>]*id="([^"]+)"[^>]*>([\s\S]*?)</(?:xccdf(?:-\d+\.\d+)?:)?Rule>`)
+		matches = rulePatternSimple.FindAllStringSubmatch(content, -1)
+
+		for _, match := range matches {
+			if len(match) >= 3 {
+				ruleID := match[1]
+				ruleContent := match[2]
+
+				meta := ruleMetadata{}
+
+				// Extract severity from attribute if present
+				severityPattern := regexp.MustCompile(`severity="([^"]*)"`)
+				if sevMatch := severityPattern.FindStringSubmatch(match[0]); len(sevMatch) >= 2 {
+					meta.Severity = sevMatch[1]
+				}
+
+				// Extract title
+				if titleMatch := titlePattern.FindStringSubmatch(ruleContent); len(titleMatch) >= 2 {
+					meta.Title = s.cleanXMLText(titleMatch[1])
+				}
+
+				// Extract description
+				if descMatch := descPattern.FindStringSubmatch(ruleContent); len(descMatch) >= 2 {
+					meta.Description = s.cleanXMLText(descMatch[1])
+				}
+
+				// Extract fix/remediation
+				if fixMatch := fixPattern.FindStringSubmatch(ruleContent); len(fixMatch) >= 2 {
+					meta.Remediation = s.cleanXMLText(fixMatch[1])
+				}
+
+				meta.Section = s.extractSection(ruleID)
+				metadata[ruleID] = meta
+			}
+		}
+	}
+
+	s.logger.WithField("rules_with_metadata", len(metadata)).Debug("Extracted rule metadata from benchmark")
+
+	return metadata
+}
+
+// cleanXMLText removes HTML/XML tags and cleans up whitespace
+func (s *OpenSCAPScanner) cleanXMLText(text string) string {
+	// Remove HTML tags
+	htmlPattern := regexp.MustCompile(`<[^>]+>`)
+	text = htmlPattern.ReplaceAllString(text, " ")
+
+	// Decode common HTML entities
+	text = strings.ReplaceAll(text, "&lt;", "<")
+	text = strings.ReplaceAll(text, "&gt;", ">")
+	text = strings.ReplaceAll(text, "&amp;", "&")
+	text = strings.ReplaceAll(text, "&quot;", "\"")
+	text = strings.ReplaceAll(text, "&#xA;", "\n")
+	text = strings.ReplaceAll(text, "&#10;", "\n")
+
+	// Clean up whitespace
+	whitespacePattern := regexp.MustCompile(`\s+`)
+	text = whitespacePattern.ReplaceAllString(text, " ")
+
+	return strings.TrimSpace(text)
+}
+
+// extractSection attempts to extract a section number from the rule ID
+func (s *OpenSCAPScanner) extractSection(ruleID string) string {
+	// Look for patterns like "1_1_1" or "1.1.1" in the rule ID
+	sectionPattern := regexp.MustCompile(`(\d+[_\.]\d+(?:[_\.]\d+)*)`)
+	if match := sectionPattern.FindString(ruleID); match != "" {
+		// Convert underscores to dots for display
+		return strings.ReplaceAll(match, "_", ".")
+	}
+	return ""
 }
 
 // mapResult maps XCCDF result to our status
