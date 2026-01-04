@@ -1122,10 +1122,18 @@ func (s *OpenSCAPScanner) parseResults(resultsPath string, contentFile string, p
 	}
 
 	// Try results file first (might have embedded benchmark), then fall back to benchmark file
+	s.logger.WithFields(map[string]interface{}{
+		"results_content_len":   len(resultsContent),
+		"benchmark_content_len": len(benchmarkContent),
+	}).Info("Starting metadata extraction")
+
 	ruleMetadataMap := s.extractRuleMetadata(resultsContent)
+	s.logger.WithField("rules_from_results", len(ruleMetadataMap)).Info("Extracted metadata from results file")
+
 	if len(ruleMetadataMap) == 0 && benchmarkContent != "" {
-		s.logger.Debug("No metadata in results file, extracting from benchmark")
+		s.logger.Info("No metadata in results file, extracting from benchmark datastream")
 		ruleMetadataMap = s.extractRuleMetadata(benchmarkContent)
+		s.logger.WithField("rules_from_benchmark", len(ruleMetadataMap)).Info("Extracted metadata from benchmark file")
 	}
 
 	// Parse oscap output for rule-specific failure details
@@ -1207,6 +1215,19 @@ func (s *OpenSCAPScanner) parseResults(resultsPath string, contentFile string, p
 				Remediation: metadata.Remediation,
 				Section:     metadata.Section,
 			})
+
+			// Debug logging for result assembly (only for failed rules to reduce noise)
+			if status == "fail" {
+				s.logger.WithFields(map[string]interface{}{
+					"rule_id":         ruleID,
+					"title":           title,
+					"status":          status,
+					"has_description": len(metadata.Description) > 0,
+					"desc_len":        len(metadata.Description),
+					"has_remediation": len(metadata.Remediation) > 0,
+					"severity":        metadata.Severity,
+				}).Debug("Assembled failed rule result")
+			}
 		}
 	}
 
@@ -1328,100 +1349,184 @@ func (s *OpenSCAPScanner) parseActualExpected(finding string, description string
 func (s *OpenSCAPScanner) extractRuleMetadata(content string) map[string]ruleMetadata {
 	metadata := make(map[string]ruleMetadata)
 
-	// Pattern to match Rule elements with their content
-	// XCCDF Rule elements contain id attribute and child elements for title, description, etc.
-	rulePattern := regexp.MustCompile(`<(?:xccdf(?:-\d+\.\d+)?:)?Rule[^>]*id="([^"]+)"[^>]*severity="([^"]*)"[^>]*>([\s\S]*?)</(?:xccdf(?:-\d+\.\d+)?:)?Rule>`)
-	titlePattern := regexp.MustCompile(`<(?:xccdf(?:-\d+\.\d+)?:)?title[^>]*>([^<]+)</(?:xccdf(?:-\d+\.\d+)?:)?title>`)
-	descPattern := regexp.MustCompile(`<(?:xccdf(?:-\d+\.\d+)?:)?description[^>]*>([\s\S]*?)</(?:xccdf(?:-\d+\.\d+)?:)?description>`)
-	rationalePattern := regexp.MustCompile(`<(?:xccdf(?:-\d+\.\d+)?:)?rationale[^>]*>([\s\S]*?)</(?:xccdf(?:-\d+\.\d+)?:)?rationale>`)
-	fixPattern := regexp.MustCompile(`<(?:xccdf(?:-\d+\.\d+)?:)?fix[^>]*>([\s\S]*?)</(?:xccdf(?:-\d+\.\d+)?:)?fix>`)
+	// Extract Rule elements using a more robust approach:
+	// 1. Find all Rule opening tags and their positions
+	// 2. Find the corresponding closing tag (handling nesting)
+	// 3. Extract attributes and content separately
 
-	matches := rulePattern.FindAllStringSubmatch(content, -1)
+	// Pattern to match Rule opening tags with any attributes
+	// Namespace prefix can be like "xccdf-1.2:" so we need to include dots and hyphens
+	ruleOpenPattern := regexp.MustCompile(`<([a-zA-Z0-9._-]*:)?Rule\s+([^>]*)>`)
+	idPattern := regexp.MustCompile(`id="([^"]+)"`)
+	severityAttrPattern := regexp.MustCompile(`severity="([^"]*)"`)
 
-	for _, match := range matches {
-		if len(match) >= 4 {
-			ruleID := match[1]
-			severity := match[2]
-			ruleContent := match[3]
+	// Patterns for child elements (handle any namespace prefix including dots like xccdf-1.2:)
+	titlePattern := regexp.MustCompile(`<([a-zA-Z0-9._-]*:)?title[^>]*>([^<]+)</([a-zA-Z0-9._-]*:)?title>`)
+	descPattern := regexp.MustCompile(`<([a-zA-Z0-9._-]*:)?description[^>]*>([\s\S]*?)</([a-zA-Z0-9._-]*:)?description>`)
+	rationalePattern := regexp.MustCompile(`<([a-zA-Z0-9._-]*:)?rationale[^>]*>([\s\S]*?)</([a-zA-Z0-9._-]*:)?rationale>`)
+	// For fix elements, prefer shell script remediation (system="urn:xccdf:fix:script:sh")
+	fixShPattern := regexp.MustCompile(`<([a-zA-Z0-9._-]*:)?fix[^>]*system="urn:xccdf:fix:script:sh"[^>]*>([\s\S]*?)</([a-zA-Z0-9._-]*:)?fix>`)
+	fixPattern := regexp.MustCompile(`<([a-zA-Z0-9._-]*:)?fix[^>]*>([\s\S]*?)</([a-zA-Z0-9._-]*:)?fix>`)
+	fixTextPattern := regexp.MustCompile(`<([a-zA-Z0-9._-]*:)?fixtext[^>]*>([\s\S]*?)</([a-zA-Z0-9._-]*:)?fixtext>`)
 
-			meta := ruleMetadata{
-				Severity: severity,
+	// Find all Rule opening tags
+	openMatches := ruleOpenPattern.FindAllStringSubmatchIndex(content, -1)
+
+	for _, openMatch := range openMatches {
+		if len(openMatch) < 6 {
+			continue
+		}
+
+		tagStart := openMatch[0]
+		tagEnd := openMatch[1]
+		nsPrefix := ""
+		if openMatch[2] >= 0 && openMatch[3] > openMatch[2] {
+			nsPrefix = content[openMatch[2]:openMatch[3]]
+		}
+		attributes := content[openMatch[4]:openMatch[5]]
+
+		// Extract id from attributes
+		idMatch := idPattern.FindStringSubmatch(attributes)
+		if len(idMatch) < 2 {
+			continue
+		}
+		ruleID := idMatch[1]
+
+		// Find the closing tag for this Rule element
+		// Build the closing tag pattern based on namespace prefix
+		closingTag := "</" + nsPrefix + "Rule>"
+		openingTag := "<" + nsPrefix + "Rule"
+
+		// Find closing tag, accounting for potential nested Rule elements
+		ruleContent := ""
+		depth := 1
+		searchStart := tagEnd
+		for depth > 0 && searchStart < len(content) {
+			nextOpen := strings.Index(content[searchStart:], openingTag)
+			nextClose := strings.Index(content[searchStart:], closingTag)
+
+			if nextClose == -1 {
+				// No closing tag found
+				break
 			}
 
-			// Extract title
-			if titleMatch := titlePattern.FindStringSubmatch(ruleContent); len(titleMatch) >= 2 {
-				meta.Title = s.cleanXMLText(titleMatch[1])
+			if nextOpen != -1 && nextOpen < nextClose {
+				// Found another opening tag before closing
+				depth++
+				searchStart = searchStart + nextOpen + len(openingTag)
+			} else {
+				// Found closing tag
+				depth--
+				if depth == 0 {
+					ruleContent = content[tagEnd : searchStart+nextClose]
+				}
+				searchStart = searchStart + nextClose + len(closingTag)
 			}
+		}
 
-			// Extract description
-			if descMatch := descPattern.FindStringSubmatch(ruleContent); len(descMatch) >= 2 {
-				meta.Description = s.cleanXMLText(descMatch[1])
+		// If nesting approach failed, try simpler non-greedy match
+		if ruleContent == "" {
+			// Look for closing tag within reasonable distance (500KB limit per rule)
+			endIdx := tagStart + 500000
+			if endIdx > len(content) {
+				endIdx = len(content)
 			}
+			searchContent := content[tagEnd:endIdx]
+			closeIdx := strings.Index(searchContent, closingTag)
+			if closeIdx != -1 {
+				ruleContent = searchContent[:closeIdx]
+			}
+		}
 
-			// Extract rationale (append to description if present)
-			if ratMatch := rationalePattern.FindStringSubmatch(ruleContent); len(ratMatch) >= 2 {
-				rationale := s.cleanXMLText(ratMatch[1])
-				if rationale != "" {
-					if meta.Description != "" {
-						meta.Description = meta.Description + "\n\nRationale: " + rationale
-					} else {
-						meta.Description = "Rationale: " + rationale
-					}
+		if ruleContent == "" {
+			s.logger.WithField("rule_id", ruleID).Debug("Could not find Rule content")
+			continue
+		}
+
+		meta := ruleMetadata{}
+
+		// Extract severity from attributes
+		if sevMatch := severityAttrPattern.FindStringSubmatch(attributes); len(sevMatch) >= 2 {
+			meta.Severity = sevMatch[1]
+		}
+
+		// Extract title - use the inner text (group 2)
+		if titleMatch := titlePattern.FindStringSubmatch(ruleContent); len(titleMatch) >= 3 {
+			meta.Title = s.cleanXMLText(titleMatch[2])
+		}
+
+		// Extract description - use the inner text (group 2)
+		if descMatch := descPattern.FindStringSubmatch(ruleContent); len(descMatch) >= 3 {
+			meta.Description = s.cleanXMLText(descMatch[2])
+		}
+
+		// Extract rationale (append to description if present)
+		if ratMatch := rationalePattern.FindStringSubmatch(ruleContent); len(ratMatch) >= 3 {
+			rationale := s.cleanXMLText(ratMatch[2])
+			if rationale != "" {
+				if meta.Description != "" {
+					meta.Description = meta.Description + "\n\nRationale: " + rationale
+				} else {
+					meta.Description = "Rationale: " + rationale
 				}
 			}
+		}
 
-			// Extract fix/remediation
-			if fixMatch := fixPattern.FindStringSubmatch(ruleContent); len(fixMatch) >= 2 {
-				meta.Remediation = s.cleanXMLText(fixMatch[1])
+		// Extract fix/remediation - prefer shell script fix, then any fix, then fixtext
+		if fixShMatch := fixShPattern.FindStringSubmatch(ruleContent); len(fixShMatch) >= 3 {
+			meta.Remediation = s.cleanXMLText(fixShMatch[2])
+		}
+		if meta.Remediation == "" {
+			if fixMatch := fixPattern.FindStringSubmatch(ruleContent); len(fixMatch) >= 3 {
+				meta.Remediation = s.cleanXMLText(fixMatch[2])
 			}
+		}
+		if meta.Remediation == "" {
+			if fixTextMatch := fixTextPattern.FindStringSubmatch(ruleContent); len(fixTextMatch) >= 3 {
+				meta.Remediation = s.cleanXMLText(fixTextMatch[2])
+			}
+		}
 
-			// Extract section from rule ID (e.g., "1.1.1" from rule naming)
-			meta.Section = s.extractSection(ruleID)
+		// Extract section from rule ID (e.g., "1.1.1" from rule naming)
+		meta.Section = s.extractSection(ruleID)
 
-			metadata[ruleID] = meta
+		metadata[ruleID] = meta
+
+		// Debug logging for metadata extraction verification
+		s.logger.WithFields(map[string]interface{}{
+			"rule_id":          ruleID,
+			"title":            meta.Title,
+			"title_len":        len(meta.Title),
+			"desc_len":         len(meta.Description),
+			"desc_preview":     truncateString(meta.Description, 100),
+			"remediation_len":  len(meta.Remediation),
+			"severity":         meta.Severity,
+			"section":          meta.Section,
+		}).Debug("Extracted rule metadata")
+	}
+
+	// Count rules with actual content for debugging
+	withTitle := 0
+	withDesc := 0
+	withRemediation := 0
+	for _, m := range metadata {
+		if m.Title != "" {
+			withTitle++
+		}
+		if m.Description != "" {
+			withDesc++
+		}
+		if m.Remediation != "" {
+			withRemediation++
 		}
 	}
 
-	// If we didn't find Rules with severity attribute, try without it
-	if len(metadata) == 0 {
-		rulePatternSimple := regexp.MustCompile(`<(?:xccdf(?:-\d+\.\d+)?:)?Rule[^>]*id="([^"]+)"[^>]*>([\s\S]*?)</(?:xccdf(?:-\d+\.\d+)?:)?Rule>`)
-		matches = rulePatternSimple.FindAllStringSubmatch(content, -1)
-
-		for _, match := range matches {
-			if len(match) >= 3 {
-				ruleID := match[1]
-				ruleContent := match[2]
-
-				meta := ruleMetadata{}
-
-				// Extract severity from attribute if present
-				severityPattern := regexp.MustCompile(`severity="([^"]*)"`)
-				if sevMatch := severityPattern.FindStringSubmatch(match[0]); len(sevMatch) >= 2 {
-					meta.Severity = sevMatch[1]
-				}
-
-				// Extract title
-				if titleMatch := titlePattern.FindStringSubmatch(ruleContent); len(titleMatch) >= 2 {
-					meta.Title = s.cleanXMLText(titleMatch[1])
-				}
-
-				// Extract description
-				if descMatch := descPattern.FindStringSubmatch(ruleContent); len(descMatch) >= 2 {
-					meta.Description = s.cleanXMLText(descMatch[1])
-				}
-
-				// Extract fix/remediation
-				if fixMatch := fixPattern.FindStringSubmatch(ruleContent); len(fixMatch) >= 2 {
-					meta.Remediation = s.cleanXMLText(fixMatch[1])
-				}
-
-				meta.Section = s.extractSection(ruleID)
-				metadata[ruleID] = meta
-			}
-		}
-	}
-
-	s.logger.WithField("rules_with_metadata", len(metadata)).Debug("Extracted rule metadata from benchmark")
+	s.logger.WithFields(map[string]interface{}{
+		"total_rules":      len(metadata),
+		"with_title":       withTitle,
+		"with_description": withDesc,
+		"with_remediation": withRemediation,
+	}).Info("Extracted rule metadata summary")
 
 	return metadata
 }
@@ -1445,6 +1550,14 @@ func (s *OpenSCAPScanner) cleanXMLText(text string) string {
 	text = whitespacePattern.ReplaceAllString(text, " ")
 
 	return strings.TrimSpace(text)
+}
+
+// truncateString truncates a string to maxLen characters for logging
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
 
 // extractSection attempts to extract a section number from the rule ID
