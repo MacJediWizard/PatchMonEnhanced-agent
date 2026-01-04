@@ -24,8 +24,9 @@ var (
 
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
-	Use:   "patchmon-agent",
-	Short: "PatchMon Agent for package monitoring",
+	Use:     "patchmon-agent",
+	Short:   "PatchMon Agent for package monitoring",
+	Version: version.Version,
 	Long: `PatchMon Agent v` + version.Version + `
 
 A monitoring agent that sends package information to PatchMon.`,
