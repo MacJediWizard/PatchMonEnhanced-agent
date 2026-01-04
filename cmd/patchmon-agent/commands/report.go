@@ -323,7 +323,9 @@ func sendIntegrationData() {
 
 	// Register available integrations
 	integrationMgr.Register(docker.New(logger))
-	integrationMgr.Register(compliance.New(logger))
+	complianceInteg := compliance.New(logger)
+	complianceInteg.SetDockerIntegrationEnabled(cfgManager.IsIntegrationEnabled("docker"))
+	integrationMgr.Register(complianceInteg)
 	// Future: integrationMgr.Register(proxmox.New(logger))
 	// Future: integrationMgr.Register(kubernetes.New(logger))
 

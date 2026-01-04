@@ -564,18 +564,24 @@ func toggleIntegration(integrationName string, enabled bool) error {
 				components["openscap"] = "ready"
 			}
 
-			// Pre-pull Docker Bench image if Docker is available
-			dockerBenchScanner := compliance.NewDockerBenchScanner(logger)
-			if dockerBenchScanner.IsAvailable() {
-				if err := dockerBenchScanner.EnsureInstalled(); err != nil {
-					logger.WithError(err).Warn("Failed to pre-pull Docker Bench image (will pull on first scan)")
-					components["docker-bench"] = "failed"
+			// Pre-pull Docker Bench image only if Docker integration is enabled AND Docker is available
+			dockerIntegrationEnabled := cfgManager.IsIntegrationEnabled("docker")
+			if dockerIntegrationEnabled {
+				dockerBenchScanner := compliance.NewDockerBenchScanner(logger)
+				if dockerBenchScanner.IsAvailable() {
+					if err := dockerBenchScanner.EnsureInstalled(); err != nil {
+						logger.WithError(err).Warn("Failed to pre-pull Docker Bench image (will pull on first scan)")
+						components["docker-bench"] = "failed"
+					} else {
+						logger.Info("Docker Bench image pulled successfully")
+						components["docker-bench"] = "ready"
+					}
 				} else {
-					logger.Info("Docker Bench image pulled successfully")
-					components["docker-bench"] = "ready"
+					components["docker-bench"] = "unavailable"
 				}
 			} else {
-				components["docker-bench"] = "unavailable"
+				logger.Debug("Docker integration not enabled, skipping Docker Bench setup")
+				// Don't add docker-bench to components at all if integration is not enabled
 			}
 
 			// Determine overall status
@@ -740,6 +746,8 @@ func runComplianceScan(profileType string) error {
 
 	// Create compliance integration
 	complianceInteg := compliance.New(logger)
+	// Set Docker integration status - Docker Bench only runs if Docker integration is enabled
+	complianceInteg.SetDockerIntegrationEnabled(cfgManager.IsIntegrationEnabled("docker"))
 
 	if !complianceInteg.IsAvailable() {
 		return fmt.Errorf("compliance scanning not available on this system")

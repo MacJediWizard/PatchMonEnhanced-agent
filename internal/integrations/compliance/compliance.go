@@ -15,9 +15,10 @@ const integrationName = "compliance"
 
 // Integration implements the Integration interface for compliance scanning
 type Integration struct {
-	logger       *logrus.Logger
-	openscap     *OpenSCAPScanner
-	dockerBench  *DockerBenchScanner
+	logger                 *logrus.Logger
+	openscap               *OpenSCAPScanner
+	dockerBench            *DockerBenchScanner
+	dockerIntegrationEnabled bool
 }
 
 // New creates a new Compliance integration
@@ -26,7 +27,14 @@ func New(logger *logrus.Logger) *Integration {
 		logger:      logger,
 		openscap:    NewOpenSCAPScanner(logger),
 		dockerBench: NewDockerBenchScanner(logger),
+		dockerIntegrationEnabled: false,
 	}
+}
+
+// SetDockerIntegrationEnabled sets whether Docker integration is enabled
+// Docker Bench scans will only run if this is true AND Docker is available
+func (c *Integration) SetDockerIntegrationEnabled(enabled bool) {
+	c.dockerIntegrationEnabled = enabled
 }
 
 // Name returns the integration name
@@ -66,13 +74,16 @@ func (c *Integration) Collect(ctx context.Context) (*models.IntegrationData, err
 
 	c.logger.Info("Starting compliance scan collection...")
 
+	// Docker Bench is only available if Docker integration is enabled AND Docker is installed
+	dockerBenchEffectivelyAvailable := c.dockerIntegrationEnabled && c.dockerBench.IsAvailable()
+
 	complianceData := &models.ComplianceData{
 		Scans:   make([]models.ComplianceScan, 0),
 		OSInfo:  c.openscap.GetOSInfo(),
 		ScannerInfo: models.ComplianceScannerInfo{
 			OpenSCAPAvailable:    c.openscap.IsAvailable(),
 			OpenSCAPVersion:      c.openscap.GetVersion(),
-			DockerBenchAvailable: c.dockerBench.IsAvailable(),
+			DockerBenchAvailable: dockerBenchEffectivelyAvailable,
 			AvailableProfiles:    c.openscap.GetAvailableProfiles(),
 		},
 	}
@@ -102,8 +113,8 @@ func (c *Integration) Collect(ctx context.Context) (*models.IntegrationData, err
 		}
 	}
 
-	// Run Docker Bench scan if available
-	if c.dockerBench.IsAvailable() {
+	// Run Docker Bench scan if Docker integration is enabled AND Docker is available
+	if dockerBenchEffectivelyAvailable {
 		c.logger.Info("Running Docker Bench for Security scan...")
 		scan, err := c.dockerBench.RunScan(ctx)
 		if err != nil {
