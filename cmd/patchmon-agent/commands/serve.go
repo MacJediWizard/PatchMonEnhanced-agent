@@ -427,6 +427,18 @@ type wsMsg struct {
 	ruleID               string // For remediate_rule: specific rule ID to remediate
 }
 
+// ComplianceScanProgress represents a progress update during compliance scanning
+type ComplianceScanProgress struct {
+	Phase       string  `json:"phase"`        // started, evaluating, parsing, completed, failed
+	ProfileName string  `json:"profile_name"` // Name of the profile being scanned
+	Message     string  `json:"message"`      // Human-readable progress message
+	Progress    float64 `json:"progress"`     // 0-100 percentage (approximate)
+	Error       string  `json:"error,omitempty"`
+}
+
+// Global channel for compliance scan progress updates
+var complianceProgressChan = make(chan ComplianceScanProgress, 10)
+
 func wsLoop(out chan<- wsMsg, dockerEvents <-chan interface{}) {
 	backoff := time.Second
 	for {
@@ -567,6 +579,42 @@ func connectOnce(out chan<- wsMsg, dockerEvents <-chan interface{}) error {
 						return
 					}
 				}
+			}
+		}
+	}()
+
+	// Create a goroutine to send compliance scan progress updates through WebSocket
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			case progress, ok := <-complianceProgressChan:
+				if !ok {
+					return // Channel closed
+				}
+				progressJSON, err := json.Marshal(map[string]interface{}{
+					"type":         "compliance_scan_progress",
+					"phase":        progress.Phase,
+					"profile_name": progress.ProfileName,
+					"message":      progress.Message,
+					"progress":     progress.Progress,
+					"error":        progress.Error,
+					"timestamp":    time.Now().Format(time.RFC3339),
+				})
+				if err != nil {
+					logger.WithError(err).Warn("Failed to marshal compliance progress event")
+					continue
+				}
+
+				if err := conn.WriteMessage(websocket.TextMessage, progressJSON); err != nil {
+					logger.WithError(err).Debug("Failed to send compliance progress via WebSocket")
+					return
+				}
+				logger.WithFields(map[string]interface{}{
+					"phase":   progress.Phase,
+					"message": progress.Message,
+				}).Debug("Sent compliance progress update via WebSocket")
 			}
 		}
 	}()
@@ -909,12 +957,37 @@ func runComplianceScan(profileType string) error {
 	})
 }
 
+// sendComplianceProgress sends a progress update via the global channel
+func sendComplianceProgress(phase, profileName, message string, progress float64, errMsg string) {
+	select {
+	case complianceProgressChan <- ComplianceScanProgress{
+		Phase:       phase,
+		ProfileName: profileName,
+		Message:     message,
+		Progress:    progress,
+		Error:       errMsg,
+	}:
+		// Successfully sent
+	default:
+		// Channel full or no listener, skip to avoid blocking
+		logger.Debug("Compliance progress channel full, skipping update")
+	}
+}
+
 // runComplianceScanWithOptions runs an on-demand compliance scan with options and sends results to server
 func runComplianceScanWithOptions(options *models.ComplianceScanOptions) error {
+	profileName := options.ProfileID
+	if profileName == "" {
+		profileName = "default"
+	}
+
 	logger.WithFields(map[string]interface{}{
 		"profile_id":         options.ProfileID,
 		"enable_remediation": options.EnableRemediation,
 	}).Info("Starting on-demand compliance scan")
+
+	// Send progress: started
+	sendComplianceProgress("started", profileName, "Initializing compliance scan...", 5, "")
 
 	// Create compliance integration
 	complianceInteg := compliance.New(logger)
@@ -922,8 +995,12 @@ func runComplianceScanWithOptions(options *models.ComplianceScanOptions) error {
 	complianceInteg.SetDockerIntegrationEnabled(cfgManager.IsIntegrationEnabled("docker"))
 
 	if !complianceInteg.IsAvailable() {
+		sendComplianceProgress("failed", profileName, "Compliance scanning not available", 0, "compliance scanning not available on this system")
 		return fmt.Errorf("compliance scanning not available on this system")
 	}
+
+	// Send progress: evaluating
+	sendComplianceProgress("evaluating", profileName, "Running OpenSCAP evaluation (this may take several minutes)...", 15, "")
 
 	// Run the scan with options
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
@@ -931,19 +1008,28 @@ func runComplianceScanWithOptions(options *models.ComplianceScanOptions) error {
 
 	integrationData, err := complianceInteg.CollectWithOptions(ctx, options)
 	if err != nil {
+		sendComplianceProgress("failed", profileName, "Scan failed", 0, err.Error())
 		return fmt.Errorf("compliance scan failed: %w", err)
 	}
+
+	// Send progress: parsing
+	sendComplianceProgress("parsing", profileName, "Processing scan results...", 80, "")
 
 	// Extract compliance data
 	complianceData, ok := integrationData.Data.(*models.ComplianceData)
 	if !ok {
+		sendComplianceProgress("failed", profileName, "Failed to extract compliance data", 0, "failed to extract compliance data")
 		return fmt.Errorf("failed to extract compliance data")
 	}
 
 	if len(complianceData.Scans) == 0 {
 		logger.Info("No compliance scans to send")
+		sendComplianceProgress("completed", profileName, "Scan completed (no results)", 100, "")
 		return nil
 	}
+
+	// Send progress: sending
+	sendComplianceProgress("sending", profileName, "Uploading results to server...", 90, "")
 
 	// Get system info
 	systemDetector := system.New(logger)
@@ -965,8 +1051,17 @@ func runComplianceScanWithOptions(options *models.ComplianceScanOptions) error {
 
 	response, err := httpClient.SendComplianceData(sendCtx, payload)
 	if err != nil {
+		sendComplianceProgress("failed", profileName, "Failed to send results", 0, err.Error())
 		return fmt.Errorf("failed to send compliance data: %w", err)
 	}
+
+	// Send progress: completed with score
+	score := float64(0)
+	if len(complianceData.Scans) > 0 {
+		score = complianceData.Scans[0].Score
+	}
+	completedMsg := fmt.Sprintf("Scan completed! Score: %.1f%%", score)
+	sendComplianceProgress("completed", profileName, completedMsg, 100, "")
 
 	logFields := map[string]interface{}{
 		"scans_received": response.ScansReceived,
