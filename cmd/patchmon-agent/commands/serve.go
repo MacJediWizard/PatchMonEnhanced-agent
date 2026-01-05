@@ -310,6 +310,19 @@ func runService() error {
 						logger.WithField("rule_id", ruleID).Info("Single rule remediation completed")
 					}
 				}(m.ruleID)
+			case "docker_image_scan":
+				logger.WithFields(map[string]interface{}{
+					"image_name":      m.imageName,
+					"container_name":  m.containerName,
+					"scan_all_images": m.scanAllImages,
+				}).Info("Running Docker image CVE scan...")
+				go func(msg wsMsg) {
+					if err := runDockerImageScan(msg.imageName, msg.containerName, msg.scanAllImages); err != nil {
+						logger.WithError(err).Warn("docker_image_scan failed")
+					} else {
+						logger.Info("Docker image CVE scan completed successfully")
+					}
+				}(m)
 			}
 		}
 	}
@@ -419,6 +432,20 @@ func reportIntegrationStatusOnStartup(ctx context.Context) {
 			dockerBenchScanner := compliance.NewDockerBenchScanner(logger)
 			scannerDetails.DockerBenchAvailable = dockerBenchScanner.IsAvailable()
 
+			// Add oscap-docker profile for container image CVE scanning
+			if cfgManager.IsIntegrationEnabled("docker") {
+				oscapDockerScanner := compliance.NewOscapDockerScanner(logger)
+				if oscapDockerScanner.IsAvailable() {
+					scannerDetails.AvailableProfiles = append(scannerDetails.AvailableProfiles, models.ScanProfileInfo{
+						ID:          "docker-image-cve",
+						Name:        "Docker Image CVE Scan",
+						Description: "Scan Docker images for known CVEs using OpenSCAP",
+						Type:        "oscap-docker",
+						Category:    "docker",
+					})
+				}
+			}
+
 			if err := httpClient.SendIntegrationSetupStatus(ctx, &models.IntegrationSetupStatus{
 				Integration: "compliance",
 				Enabled:     true,
@@ -491,6 +518,9 @@ type wsMsg struct {
 	enableRemediation    bool   // For compliance_scan: enable auto-remediation
 	fetchRemoteResources bool   // For compliance_scan: fetch remote resources
 	ruleID               string // For remediate_rule: specific rule ID to remediate
+	imageName            string // For docker_image_scan: Docker image to scan
+	containerName        string // For docker_image_scan: Docker container to scan
+	scanAllImages        bool   // For docker_image_scan: scan all images on system
 }
 
 // ComplianceScanProgress represents a progress update during compliance scanning
@@ -704,6 +734,9 @@ func connectOnce(out chan<- wsMsg, dockerEvents <-chan interface{}) error {
 			EnableRemediation    bool   `json:"enable_remediation"`     // For compliance_scan
 			FetchRemoteResources bool   `json:"fetch_remote_resources"` // For compliance_scan
 			RuleID               string `json:"rule_id"`                // For remediate_rule: specific rule to remediate
+			ImageName            string `json:"image_name"`             // For docker_image_scan: Docker image to scan
+			ContainerName        string `json:"container_name"`         // For docker_image_scan: container to scan
+			ScanAllImages        bool   `json:"scan_all_images"`        // For docker_image_scan: scan all images
 		}
 		if err := json.Unmarshal(data, &payload); err != nil {
 			logger.WithError(err).WithField("data", string(data)).Warn("Failed to parse WebSocket message")
@@ -765,6 +798,18 @@ func connectOnce(out chan<- wsMsg, dockerEvents <-chan interface{}) error {
 			case "remediate_rule":
 				logger.WithField("rule_id", payload.RuleID).Info("remediate_rule received")
 				out <- wsMsg{kind: "remediate_rule", ruleID: payload.RuleID}
+			case "docker_image_scan":
+				logger.WithFields(map[string]interface{}{
+					"image_name":      payload.ImageName,
+					"container_name":  payload.ContainerName,
+					"scan_all_images": payload.ScanAllImages,
+				}).Info("docker_image_scan received")
+				out <- wsMsg{
+					kind:          "docker_image_scan",
+					imageName:     payload.ImageName,
+					containerName: payload.ContainerName,
+					scanAllImages: payload.ScanAllImages,
+				}
 			default:
 				if payload.Type != "" && payload.Type != "connected" {
 					logger.WithField("type", payload.Type).Warn("Unknown WebSocket message type")
@@ -827,8 +872,23 @@ func toggleIntegration(integrationName string, enabled bool) error {
 				} else {
 					components["docker-bench"] = "unavailable"
 				}
+
+				// Install oscap-docker for container image CVE scanning
+				oscapDockerScanner := compliance.NewOscapDockerScanner(logger)
+				if !oscapDockerScanner.IsAvailable() {
+					if err := oscapDockerScanner.EnsureInstalled(); err != nil {
+						logger.WithError(err).Warn("Failed to install oscap-docker (container CVE scanning won't be available)")
+						components["oscap-docker"] = "failed"
+					} else {
+						logger.Info("oscap-docker installed successfully")
+						components["oscap-docker"] = "ready"
+					}
+				} else {
+					logger.Info("oscap-docker already available")
+					components["oscap-docker"] = "ready"
+				}
 			} else {
-				logger.Debug("Docker integration not enabled, skipping Docker Bench setup")
+				logger.Debug("Docker integration not enabled, skipping Docker Bench and oscap-docker setup")
 				// Don't add docker-bench to components at all if integration is not enabled
 			}
 
@@ -851,7 +911,7 @@ func toggleIntegration(integrationName string, enabled bool) error {
 			// Get detailed scanner info to send with status
 			scannerDetails := openscapScanner.GetScannerDetails()
 
-			// Add Docker Bench info if available
+			// Add Docker Bench and oscap-docker info if available
 			if dockerIntegrationEnabled {
 				dockerBenchScanner := compliance.NewDockerBenchScanner(logger)
 				scannerDetails.DockerBenchAvailable = dockerBenchScanner.IsAvailable()
@@ -861,6 +921,18 @@ func toggleIntegration(integrationName string, enabled bool) error {
 						Name:        "Docker Bench for Security",
 						Description: "CIS Docker Benchmark security checks",
 						Type:        "docker-bench",
+					})
+				}
+
+				// Add oscap-docker profile for container image CVE scanning
+				oscapDockerScanner := compliance.NewOscapDockerScanner(logger)
+				if oscapDockerScanner.IsAvailable() {
+					scannerDetails.AvailableProfiles = append(scannerDetails.AvailableProfiles, models.ScanProfileInfo{
+						ID:          "docker-image-cve",
+						Name:        "Docker Image CVE Scan",
+						Description: "Scan Docker images for known CVEs using OpenSCAP",
+						Type:        "oscap-docker",
+						Category:    "docker",
 					})
 				}
 			}
@@ -1176,6 +1248,134 @@ func runComplianceScanWithOptions(options *models.ComplianceScanOptions) error {
 		logFields["remediation_enabled"] = true
 	}
 	logger.WithFields(logFields).Info("On-demand compliance scan results sent to server")
+
+	return nil
+}
+
+// runDockerImageScan runs a CVE scan on Docker images using oscap-docker
+func runDockerImageScan(imageName, containerName string, scanAllImages bool) error {
+	logger.WithFields(map[string]interface{}{
+		"image_name":      imageName,
+		"container_name":  containerName,
+		"scan_all_images": scanAllImages,
+	}).Info("Starting Docker image CVE scan")
+
+	// Check if Docker integration is enabled
+	if !cfgManager.IsIntegrationEnabled("docker") {
+		return fmt.Errorf("docker integration is not enabled")
+	}
+
+	// Check if compliance integration is enabled (required for oscap-docker)
+	if !cfgManager.IsIntegrationEnabled("compliance") {
+		return fmt.Errorf("compliance integration is not enabled (required for oscap-docker)")
+	}
+
+	// Create oscap-docker scanner
+	oscapDockerScanner := compliance.NewOscapDockerScanner(logger)
+	if !oscapDockerScanner.IsAvailable() {
+		sendComplianceProgress("failed", "Docker Image CVE Scan", "oscap-docker not available", 0, "oscap-docker is not installed or Docker is not running")
+		return fmt.Errorf("oscap-docker is not available")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	var scans []*models.ComplianceScan
+
+	if scanAllImages {
+		// Scan all Docker images
+		sendComplianceProgress("started", "Docker Image CVE Scan", "Scanning all Docker images for CVEs...", 5, "")
+
+		results, err := oscapDockerScanner.ScanAllImages(ctx)
+		if err != nil {
+			sendComplianceProgress("failed", "Docker Image CVE Scan", "Failed to scan images", 0, err.Error())
+			return fmt.Errorf("failed to scan all images: %w", err)
+		}
+		scans = results
+	} else if imageName != "" {
+		// Scan specific image
+		sendComplianceProgress("started", "Docker Image CVE Scan", fmt.Sprintf("Scanning image %s for CVEs...", imageName), 5, "")
+
+		scan, err := oscapDockerScanner.ScanImage(ctx, imageName)
+		if err != nil {
+			sendComplianceProgress("failed", "Docker Image CVE Scan", "Failed to scan image", 0, err.Error())
+			return fmt.Errorf("failed to scan image %s: %w", imageName, err)
+		}
+		scans = append(scans, scan)
+	} else if containerName != "" {
+		// Scan specific container
+		sendComplianceProgress("started", "Docker Image CVE Scan", fmt.Sprintf("Scanning container %s for CVEs...", containerName), 5, "")
+
+		scan, err := oscapDockerScanner.ScanContainer(ctx, containerName)
+		if err != nil {
+			sendComplianceProgress("failed", "Docker Image CVE Scan", "Failed to scan container", 0, err.Error())
+			return fmt.Errorf("failed to scan container %s: %w", containerName, err)
+		}
+		scans = append(scans, scan)
+	} else {
+		return fmt.Errorf("no image or container specified for scan")
+	}
+
+	if len(scans) == 0 {
+		sendComplianceProgress("completed", "Docker Image CVE Scan", "No images to scan", 100, "")
+		logger.Info("No Docker images to scan")
+		return nil
+	}
+
+	// Send progress: parsing
+	sendComplianceProgress("parsing", "Docker Image CVE Scan", "Processing scan results...", 80, "")
+
+	// Convert pointer slice to value slice for ComplianceData
+	scanValues := make([]models.ComplianceScan, len(scans))
+	for i, scan := range scans {
+		scanValues[i] = *scan
+	}
+
+	// Create compliance data structure
+	complianceData := &models.ComplianceData{
+		Scans: scanValues,
+	}
+
+	// Send progress: sending
+	sendComplianceProgress("sending", "Docker Image CVE Scan", "Uploading results to server...", 90, "")
+
+	// Get system info
+	systemDetector := system.New(logger)
+	hostname, _ := systemDetector.GetHostname()
+	machineID := systemDetector.GetMachineID()
+
+	// Create payload
+	payload := &models.CompliancePayload{
+		ComplianceData: *complianceData,
+		Hostname:       hostname,
+		MachineID:      machineID,
+		AgentVersion:   version.Version,
+	}
+
+	// Send to server
+	httpClient := client.New(cfgManager, logger)
+	sendCtx, sendCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer sendCancel()
+
+	response, err := httpClient.SendComplianceData(sendCtx, payload)
+	if err != nil {
+		sendComplianceProgress("failed", "Docker Image CVE Scan", "Failed to send results", 0, err.Error())
+		return fmt.Errorf("failed to send Docker image scan data: %w", err)
+	}
+
+	// Send progress: completed
+	totalCVEs := 0
+	for _, scan := range scans {
+		totalCVEs += scan.Failed
+	}
+	completedMsg := fmt.Sprintf("Scan completed! Found %d CVEs across %d images", totalCVEs, len(scans))
+	sendComplianceProgress("completed", "Docker Image CVE Scan", completedMsg, 100, "")
+
+	logger.WithFields(map[string]interface{}{
+		"scans_received": response.ScansReceived,
+		"images_scanned": len(scans),
+		"cves_found":     totalCVEs,
+	}).Info("Docker image CVE scan results sent to server")
 
 	return nil
 }
