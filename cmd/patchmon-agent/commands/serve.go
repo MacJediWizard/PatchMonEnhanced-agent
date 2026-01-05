@@ -349,11 +349,14 @@ func upgradeSSGContent() error {
 	openscapScanner := compliance.NewOpenSCAPScanner(logger)
 	scannerDetails := openscapScanner.GetScannerDetails()
 
-	// Check if Docker integration is enabled for Docker Bench info
+	// Check if Docker integration is enabled for Docker Bench and oscap-docker info
 	dockerIntegrationEnabled := cfgManager.IsIntegrationEnabled("docker")
 	if dockerIntegrationEnabled {
 		dockerBenchScanner := compliance.NewDockerBenchScanner(logger)
 		scannerDetails.DockerBenchAvailable = dockerBenchScanner.IsAvailable()
+
+		oscapDockerScanner := compliance.NewOscapDockerScanner(logger)
+		scannerDetails.OscapDockerAvailable = oscapDockerScanner.IsAvailable()
 	}
 
 	// Send updated status
@@ -432,13 +435,14 @@ func reportIntegrationStatusOnStartup(ctx context.Context) {
 			openscapScanner := compliance.NewOpenSCAPScanner(logger)
 			scannerDetails := openscapScanner.GetScannerDetails()
 
-			// Add Docker Bench info if available
+			// Add Docker Bench and oscap-docker info if available
 			dockerBenchScanner := compliance.NewDockerBenchScanner(logger)
 			scannerDetails.DockerBenchAvailable = dockerBenchScanner.IsAvailable()
 
-			// Add oscap-docker profile for container image CVE scanning
+			// Add oscap-docker info for container image CVE scanning
 			if cfgManager.IsIntegrationEnabled("docker") {
 				oscapDockerScanner := compliance.NewOscapDockerScanner(logger)
+				scannerDetails.OscapDockerAvailable = oscapDockerScanner.IsAvailable()
 				if oscapDockerScanner.IsAvailable() {
 					scannerDetails.AvailableProfiles = append(scannerDetails.AvailableProfiles, models.ScanProfileInfo{
 						ID:          "docker-image-cve",
@@ -928,8 +932,9 @@ func toggleIntegration(integrationName string, enabled bool) error {
 					})
 				}
 
-				// Add oscap-docker profile for container image CVE scanning
+				// Add oscap-docker info for container image CVE scanning
 				oscapDockerScanner := compliance.NewOscapDockerScanner(logger)
+				scannerDetails.OscapDockerAvailable = oscapDockerScanner.IsAvailable()
 				if oscapDockerScanner.IsAvailable() {
 					scannerDetails.AvailableProfiles = append(scannerDetails.AvailableProfiles, models.ScanProfileInfo{
 						ID:          "docker-image-cve",
@@ -1036,6 +1041,7 @@ func toggleIntegration(integrationName string, enabled bool) error {
 					logger.WithError(err).Warn("Failed to install oscap-docker (container CVE scanning won't be available)")
 				} else {
 					logger.Info("oscap-docker installed successfully")
+					scannerDetails.OscapDockerAvailable = true
 					scannerDetails.AvailableProfiles = append(scannerDetails.AvailableProfiles, models.ScanProfileInfo{
 						ID:          "docker-image-cve",
 						Name:        "Docker Image CVE Scan",
@@ -1046,6 +1052,7 @@ func toggleIntegration(integrationName string, enabled bool) error {
 				}
 			} else {
 				logger.Info("oscap-docker already available")
+				scannerDetails.OscapDockerAvailable = true
 				scannerDetails.AvailableProfiles = append(scannerDetails.AvailableProfiles, models.ScanProfileInfo{
 					ID:          "docker-image-cve",
 					Name:        "Docker Image CVE Scan",

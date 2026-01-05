@@ -65,6 +65,7 @@ type ComplianceScannerInfo struct {
 	OpenSCAPAvailable    bool     `json:"openscap_available"`
 	OpenSCAPVersion      string   `json:"openscap_version,omitempty"`
 	DockerBenchAvailable bool     `json:"docker_bench_available"`
+	OscapDockerAvailable bool     `json:"oscap_docker_available"`
 	AvailableProfiles    []string `json:"available_profiles,omitempty"`
 }
 

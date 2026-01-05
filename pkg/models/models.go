@@ -196,6 +196,9 @@ type ComplianceScannerDetails struct {
 	DockerBenchAvailable bool   `json:"docker_bench_available"`
 	DockerBenchVersion   string `json:"docker_bench_version,omitempty"`
 
+	// oscap-docker info (for Docker image CVE scanning)
+	OscapDockerAvailable bool `json:"oscap_docker_available"`
+
 	// OS info for content matching
 	OSName    string `json:"os_name,omitempty"`
 	OSVersion string `json:"os_version,omitempty"`
