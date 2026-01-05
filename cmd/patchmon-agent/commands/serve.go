@@ -174,6 +174,9 @@ func runService() error {
 	// Start integration monitoring (Docker real-time events, etc.)
 	startIntegrationMonitoring(ctx, dockerEvents)
 
+	// Report current integration status on startup
+	go reportIntegrationStatusOnStartup(ctx)
+
 	// Create ticker with initial interval
 	ticker := time.NewTicker(time.Duration(intervalMinutes) * time.Minute)
 	defer ticker.Stop()
@@ -391,6 +394,61 @@ func remediateSingleRule(ruleID string) error {
 
 	logger.WithField("rule_id", ruleID).Info("Single rule remediation completed successfully")
 	return nil
+}
+
+// reportIntegrationStatusOnStartup reports the current status of all enabled integrations
+// This ensures the server knows about integration states after agent restart/reconnect
+func reportIntegrationStatusOnStartup(ctx context.Context) {
+	// Wait a moment for WebSocket to establish
+	time.Sleep(2 * time.Second)
+
+	logger.Info("Reporting integration status on startup...")
+
+	// Create HTTP client for API calls
+	httpClient := client.New(cfgManager, logger)
+
+	// Report compliance integration status if enabled
+	if cfgManager.IsIntegrationEnabled("compliance") {
+		complianceInteg := compliance.New(logger)
+		if complianceInteg.IsAvailable() {
+			// Get scanner details
+			openscapScanner := compliance.NewOpenSCAPScanner(logger)
+			scannerDetails := openscapScanner.GetScannerDetails()
+
+			// Add Docker Bench info if available
+			dockerBenchScanner := compliance.NewDockerBenchScanner(logger)
+			scannerDetails.DockerBenchAvailable = dockerBenchScanner.IsAvailable()
+
+			if err := httpClient.SendIntegrationSetupStatus(ctx, &models.IntegrationSetupStatus{
+				Integration: "compliance",
+				Enabled:     true,
+				Status:      "ready",
+				Message:     "Compliance scanner ready",
+				ScannerInfo: scannerDetails,
+			}); err != nil {
+				logger.WithError(err).Warn("Failed to report compliance status on startup")
+			} else {
+				logger.Info("✅ Compliance integration status reported")
+			}
+		}
+	}
+
+	// Report docker integration status if enabled
+	if cfgManager.IsIntegrationEnabled("docker") {
+		dockerInteg := docker.New(logger)
+		if dockerInteg.IsAvailable() {
+			if err := httpClient.SendIntegrationSetupStatus(ctx, &models.IntegrationSetupStatus{
+				Integration: "docker",
+				Enabled:     true,
+				Status:      "ready",
+				Message:     "Docker monitoring ready",
+			}); err != nil {
+				logger.WithError(err).Warn("Failed to report docker status on startup")
+			} else {
+				logger.Info("✅ Docker integration status reported")
+			}
+		}
+	}
 }
 
 // startIntegrationMonitoring starts real-time monitoring for integrations that support it
