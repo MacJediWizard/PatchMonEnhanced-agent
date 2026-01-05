@@ -153,12 +153,18 @@ func runService() error {
 		}
 	}
 
-	// Send startup ping to notify server that agent has started
+	// Send startup ping to notify server that agent has started and get settings
 	logger.Info("🚀 Agent starting up, notifying server...")
-	if _, err := httpClient.Ping(ctx); err != nil {
+	integrationStatusIntervalMinutes := 30 // Default to 30 minutes
+	if pingResp, err := httpClient.Ping(ctx); err != nil {
 		logger.WithError(err).Warn("startup ping failed, will retry")
 	} else {
 		logger.Info("✅ Startup notification sent to server")
+		// Use server-provided integration status interval if available
+		if pingResp.IntegrationStatusInterval > 0 {
+			integrationStatusIntervalMinutes = pingResp.IntegrationStatusInterval
+			logger.WithField("interval_minutes", integrationStatusIntervalMinutes).Info("Using server-configured integration status interval")
+		}
 	}
 
 	// initial report on boot
@@ -178,12 +184,21 @@ func runService() error {
 	// Start integration monitoring (Docker real-time events, etc.)
 	startIntegrationMonitoring(ctx, dockerEvents)
 
-	// Report current integration status on startup
-	go reportIntegrationStatusOnStartup(ctx)
+	// Report current integration status on startup (wait a moment for WebSocket)
+	go func() {
+		time.Sleep(2 * time.Second)
+		reportIntegrationStatus(ctx)
+	}()
 
-	// Create ticker with initial interval
+	// Create ticker with initial interval for package reports
 	ticker := time.NewTicker(time.Duration(intervalMinutes) * time.Minute)
 	defer ticker.Stop()
+
+	// Create ticker for periodic integration status reporting (configurable, default 30 minutes)
+	// This keeps the frontend informed about scanner capabilities
+	integrationStatusTicker := time.NewTicker(time.Duration(integrationStatusIntervalMinutes) * time.Minute)
+	defer integrationStatusTicker.Stop()
+	logger.WithField("interval_minutes", integrationStatusIntervalMinutes).Info("Integration status reporting ticker started")
 
 	// Wait for offset before starting periodic reports
 	// This staggers the reporting times across different agents
@@ -209,6 +224,9 @@ func runService() error {
 					logger.WithError(err).Warn("periodic report failed")
 				}
 			}
+		case <-integrationStatusTicker.C:
+			// Periodically report integration status to keep frontend updated
+			go reportIntegrationStatus(ctx)
 		case m := <-messages:
 			switch m.kind {
 			case "settings_update":
@@ -416,13 +434,11 @@ func remediateSingleRule(ruleID string) error {
 	return nil
 }
 
-// reportIntegrationStatusOnStartup reports the current status of all enabled integrations
-// This ensures the server knows about integration states after agent restart/reconnect
-func reportIntegrationStatusOnStartup(ctx context.Context) {
-	// Wait a moment for WebSocket to establish
-	time.Sleep(2 * time.Second)
-
-	logger.Info("Reporting integration status on startup...")
+// reportIntegrationStatus reports the current status of all enabled integrations
+// This ensures the server knows about integration states and scanner capabilities
+// Called on startup and periodically based on server settings
+func reportIntegrationStatus(ctx context.Context) {
+	logger.Debug("Reporting integration status...")
 
 	// Create HTTP client for API calls
 	httpClient := client.New(cfgManager, logger)
