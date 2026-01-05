@@ -2,13 +2,17 @@ package commands
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"patchmon-agent/internal/client"
@@ -996,23 +1000,23 @@ func toggleIntegration(integrationName string, enabled bool) error {
 		}
 	}
 
-	// Handle Docker Bench installation when Docker is enabled AND Compliance is already enabled
+	// Handle Docker Bench and oscap-docker installation when Docker is enabled AND Compliance is already enabled
 	if integrationName == "docker" && enabled {
 		if cfgManager.IsIntegrationEnabled("compliance") {
-			logger.Info("Docker enabled with Compliance already active - setting up Docker Bench...")
+			logger.Info("Docker enabled with Compliance already active - setting up Docker scanning tools...")
 			httpClient := client.New(cfgManager, logger)
 			ctx := context.Background()
 
+			openscapScanner := compliance.NewOpenSCAPScanner(logger)
+			scannerDetails := openscapScanner.GetScannerDetails()
+
+			// Setup Docker Bench
 			dockerBenchScanner := compliance.NewDockerBenchScanner(logger)
 			if dockerBenchScanner.IsAvailable() {
 				if err := dockerBenchScanner.EnsureInstalled(); err != nil {
 					logger.WithError(err).Warn("Failed to pre-pull Docker Bench image (will pull on first scan)")
 				} else {
 					logger.Info("Docker Bench image pulled successfully")
-
-					// Update compliance status to include Docker Bench
-					openscapScanner := compliance.NewOpenSCAPScanner(logger)
-					scannerDetails := openscapScanner.GetScannerDetails()
 					scannerDetails.DockerBenchAvailable = true
 					scannerDetails.AvailableProfiles = append(scannerDetails.AvailableProfiles, models.ScanProfileInfo{
 						ID:          "docker-bench",
@@ -1020,18 +1024,45 @@ func toggleIntegration(integrationName string, enabled bool) error {
 						Description: "CIS Docker Benchmark security checks",
 						Type:        "docker-bench",
 					})
-
-					httpClient.SendIntegrationSetupStatus(ctx, &models.IntegrationSetupStatus{
-						Integration: "compliance",
-						Enabled:     true,
-						Status:      "ready",
-						Message:     "Docker Bench now available",
-						ScannerInfo: scannerDetails,
-					})
 				}
 			} else {
 				logger.Warn("Docker daemon not available - Docker Bench cannot be used")
 			}
+
+			// Setup oscap-docker for container image CVE scanning
+			oscapDockerScanner := compliance.NewOscapDockerScanner(logger)
+			if !oscapDockerScanner.IsAvailable() {
+				if err := oscapDockerScanner.EnsureInstalled(); err != nil {
+					logger.WithError(err).Warn("Failed to install oscap-docker (container CVE scanning won't be available)")
+				} else {
+					logger.Info("oscap-docker installed successfully")
+					scannerDetails.AvailableProfiles = append(scannerDetails.AvailableProfiles, models.ScanProfileInfo{
+						ID:          "docker-image-cve",
+						Name:        "Docker Image CVE Scan",
+						Description: "Scan Docker images for known CVEs using OpenSCAP",
+						Type:        "oscap-docker",
+						Category:    "docker",
+					})
+				}
+			} else {
+				logger.Info("oscap-docker already available")
+				scannerDetails.AvailableProfiles = append(scannerDetails.AvailableProfiles, models.ScanProfileInfo{
+					ID:          "docker-image-cve",
+					Name:        "Docker Image CVE Scan",
+					Description: "Scan Docker images for known CVEs using OpenSCAP",
+					Type:        "oscap-docker",
+					Category:    "docker",
+				})
+			}
+
+			// Send updated compliance status with Docker scanning tools
+			httpClient.SendIntegrationSetupStatus(ctx, &models.IntegrationSetupStatus{
+				Integration: "compliance",
+				Enabled:     true,
+				Status:      "ready",
+				Message:     "Docker scanning tools now available",
+				ScannerInfo: scannerDetails,
+			})
 		}
 	}
 
@@ -1071,10 +1102,12 @@ func toggleIntegration(integrationName string, enabled bool) error {
 		}
 
 		// Create a helper script that will restart the service after we exit
-		// SECURITY NOTE: Writing scripts to disk has a TOCTOU race condition risk.
-		// Mitigations: 1) 0700 permissions on dir and file (owner-only)
-		//              2) Script is deleted immediately after execution
-		//              3) Short window between write and exec (milliseconds)
+		// SECURITY: TOCTOU mitigation measures:
+		// 1) Use random suffix to prevent predictable paths
+		// 2) Use O_EXCL flag for atomic creation (fail if file exists)
+		// 3) 0700 permissions on dir and file (owner-only)
+		// 4) Script is deleted immediately after execution
+		// 5) Verify no symlink attacks before execution
 		helperScript := `#!/bin/sh
 # Wait a moment for the current process to exit
 sleep 2
@@ -1083,28 +1116,69 @@ rc-service patchmon-agent restart 2>&1 || rc-service patchmon-agent start 2>&1
 # Clean up this script
 rm -f "$0"
 `
-		helperPath := "/etc/patchmon/patchmon-restart-helper.sh"
-		// SECURITY: Use 0700 permissions (owner-only executable) to minimize TOCTOU risk
-		if err := os.WriteFile(helperPath, []byte(helperScript), 0700); err != nil {
+		// Generate random suffix to prevent predictable path attacks
+		randomBytes := make([]byte, 8)
+		if _, err := rand.Read(randomBytes); err != nil {
+			logger.WithError(err).Warn("Failed to generate random suffix, using fallback")
+			randomBytes = []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
+		}
+		helperPath := filepath.Join("/etc/patchmon", fmt.Sprintf("restart-%s.sh", hex.EncodeToString(randomBytes)))
+
+		// SECURITY: Verify the directory is not a symlink (prevent symlink attacks)
+		dirInfo, err := os.Lstat("/etc/patchmon")
+		if err == nil && dirInfo.Mode()&os.ModeSymlink != 0 {
+			logger.Warn("Security: /etc/patchmon is a symlink, refusing to create helper script")
+			os.Exit(0) // Fall through to exit approach
+		}
+
+		// SECURITY: Use O_EXCL to atomically create file (fail if exists - prevents race conditions)
+		file, err := os.OpenFile(helperPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0700)
+		if err != nil {
 			logger.WithError(err).Warn("Failed to create restart helper script, will exit and rely on OpenRC auto-restart")
 			// Fall through to exit approach
 		} else {
-			// Execute the helper script in background (detached from current process)
-			// Use 'sh -c' with nohup to ensure it runs after we exit
-			cmd := exec.Command("sh", "-c", fmt.Sprintf("nohup %s > /dev/null 2>&1 &", helperPath))
-			if err := cmd.Start(); err != nil {
-				logger.WithError(err).Warn("Failed to start restart helper script, will exit and rely on OpenRC auto-restart")
-				// Clean up script
-				if removeErr := os.Remove(helperPath); removeErr != nil {
-					logger.WithError(removeErr).Debug("Failed to remove helper script")
-				}
+			// Write the script content to the file
+			if _, err := file.WriteString(helperScript); err != nil {
+				logger.WithError(err).Warn("Failed to write restart helper script")
+				file.Close()
+				os.Remove(helperPath)
 				// Fall through to exit approach
 			} else {
-				logger.Info("Scheduled service restart via helper script, exiting now...")
-				// Give the helper script a moment to start
-				time.Sleep(500 * time.Millisecond)
-				// Exit gracefully - the helper script will restart the service
-				os.Exit(0)
+				file.Close()
+
+				// SECURITY: Verify the file we're about to execute is the one we created
+				// Check it's a regular file, not a symlink that was swapped in
+				fileInfo, err := os.Lstat(helperPath)
+				if err != nil || fileInfo.Mode()&os.ModeSymlink != 0 {
+					logger.Warn("Security: helper script may have been tampered with, refusing to execute")
+					os.Remove(helperPath)
+					os.Exit(0)
+				}
+
+				// Execute the helper script in background (detached from current process)
+				// SECURITY: Avoid shell interpretation by executing directly with nohup
+				cmd := exec.Command("nohup", helperPath)
+				cmd.Stdout = nil
+				cmd.Stderr = nil
+				// Detach from parent process group to ensure script continues after we exit
+				cmd.SysProcAttr = &syscall.SysProcAttr{
+					Setpgid: true,
+					Pgid:    0,
+				}
+				if err := cmd.Start(); err != nil {
+					logger.WithError(err).Warn("Failed to start restart helper script, will exit and rely on OpenRC auto-restart")
+					// Clean up script
+					if removeErr := os.Remove(helperPath); removeErr != nil {
+						logger.WithError(removeErr).Debug("Failed to remove helper script")
+					}
+					// Fall through to exit approach
+				} else {
+					logger.Info("Scheduled service restart via helper script, exiting now...")
+					// Give the helper script a moment to start
+					time.Sleep(500 * time.Millisecond)
+					// Exit gracefully - the helper script will restart the service
+					os.Exit(0)
+				}
 			}
 		}
 
