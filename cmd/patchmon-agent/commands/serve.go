@@ -435,15 +435,34 @@ func reportIntegrationStatusOnStartup(ctx context.Context) {
 			openscapScanner := compliance.NewOpenSCAPScanner(logger)
 			scannerDetails := openscapScanner.GetScannerDetails()
 
+			// Build components status map
+			components := make(map[string]string)
+			components["openscap"] = "ready"
+
 			// Add Docker Bench and oscap-docker info if available
 			dockerBenchScanner := compliance.NewDockerBenchScanner(logger)
 			scannerDetails.DockerBenchAvailable = dockerBenchScanner.IsAvailable()
 
-			// Add oscap-docker info for container image CVE scanning
-			if cfgManager.IsIntegrationEnabled("docker") {
+			// Check if Docker integration is enabled
+			dockerIntegrationEnabled := cfgManager.IsIntegrationEnabled("docker")
+			if dockerIntegrationEnabled {
+				if dockerBenchScanner.IsAvailable() {
+					components["docker-bench"] = "ready"
+					scannerDetails.AvailableProfiles = append(scannerDetails.AvailableProfiles, models.ScanProfileInfo{
+						ID:          "docker-bench",
+						Name:        "Docker Bench for Security",
+						Description: "CIS Docker Benchmark security checks",
+						Type:        "docker-bench",
+					})
+				} else {
+					components["docker-bench"] = "unavailable"
+				}
+
+				// Add oscap-docker info for container image CVE scanning
 				oscapDockerScanner := compliance.NewOscapDockerScanner(logger)
 				scannerDetails.OscapDockerAvailable = oscapDockerScanner.IsAvailable()
 				if oscapDockerScanner.IsAvailable() {
+					components["oscap-docker"] = "ready"
 					scannerDetails.AvailableProfiles = append(scannerDetails.AvailableProfiles, models.ScanProfileInfo{
 						ID:          "docker-image-cve",
 						Name:        "Docker Image CVE Scan",
@@ -451,7 +470,13 @@ func reportIntegrationStatusOnStartup(ctx context.Context) {
 						Type:        "oscap-docker",
 						Category:    "docker",
 					})
+				} else {
+					components["oscap-docker"] = "unavailable"
 				}
+			} else {
+				// Docker integration not enabled - mark as unavailable
+				components["docker-bench"] = "unavailable"
+				components["oscap-docker"] = "unavailable"
 			}
 
 			if err := httpClient.SendIntegrationSetupStatus(ctx, &models.IntegrationSetupStatus{
@@ -459,6 +484,7 @@ func reportIntegrationStatusOnStartup(ctx context.Context) {
 				Enabled:     true,
 				Status:      "ready",
 				Message:     "Compliance scanner ready",
+				Components:  components,
 				ScannerInfo: scannerDetails,
 			}); err != nil {
 				logger.WithError(err).Warn("Failed to report compliance status on startup")
