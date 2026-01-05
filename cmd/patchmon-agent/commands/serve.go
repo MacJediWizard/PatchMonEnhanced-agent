@@ -924,6 +924,45 @@ func toggleIntegration(integrationName string, enabled bool) error {
 		}
 	}
 
+	// Handle Docker Bench installation when Docker is enabled AND Compliance is already enabled
+	if integrationName == "docker" && enabled {
+		if cfgManager.IsIntegrationEnabled("compliance") {
+			logger.Info("Docker enabled with Compliance already active - setting up Docker Bench...")
+			httpClient := client.New(cfgManager, logger)
+			ctx := context.Background()
+
+			dockerBenchScanner := compliance.NewDockerBenchScanner(logger)
+			if dockerBenchScanner.IsAvailable() {
+				if err := dockerBenchScanner.EnsureInstalled(); err != nil {
+					logger.WithError(err).Warn("Failed to pre-pull Docker Bench image (will pull on first scan)")
+				} else {
+					logger.Info("Docker Bench image pulled successfully")
+
+					// Update compliance status to include Docker Bench
+					openscapScanner := compliance.NewOpenSCAPScanner(logger)
+					scannerDetails := openscapScanner.GetScannerDetails()
+					scannerDetails.DockerBenchAvailable = true
+					scannerDetails.AvailableProfiles = append(scannerDetails.AvailableProfiles, models.ScanProfileInfo{
+						ID:          "docker-bench",
+						Name:        "Docker Bench for Security",
+						Description: "CIS Docker Benchmark security checks",
+						Type:        "docker-bench",
+					})
+
+					httpClient.SendIntegrationSetupStatus(ctx, &models.IntegrationSetupStatus{
+						Integration: "compliance",
+						Enabled:     true,
+						Status:      "ready",
+						Message:     "Docker Bench now available",
+						ScannerInfo: scannerDetails,
+					})
+				}
+			} else {
+				logger.Warn("Docker daemon not available - Docker Bench cannot be used")
+			}
+		}
+	}
+
 	// Update config.yml
 	if err := cfgManager.SetIntegrationEnabled(integrationName, enabled); err != nil {
 		return fmt.Errorf("failed to update config: %w", err)
