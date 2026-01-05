@@ -153,18 +153,12 @@ func runService() error {
 		}
 	}
 
-	// Send startup ping to notify server that agent has started and get settings
+	// Send startup ping to notify server that agent has started
 	logger.Info("🚀 Agent starting up, notifying server...")
-	integrationStatusIntervalMinutes := 30 // Default to 30 minutes
-	if pingResp, err := httpClient.Ping(ctx); err != nil {
+	if _, err := httpClient.Ping(ctx); err != nil {
 		logger.WithError(err).Warn("startup ping failed, will retry")
 	} else {
 		logger.Info("✅ Startup notification sent to server")
-		// Use server-provided integration status interval if available
-		if pingResp.IntegrationStatusInterval > 0 {
-			integrationStatusIntervalMinutes = pingResp.IntegrationStatusInterval
-			logger.WithField("interval_minutes", integrationStatusIntervalMinutes).Info("Using server-configured integration status interval")
-		}
 	}
 
 	// initial report on boot
@@ -194,12 +188,6 @@ func runService() error {
 	ticker := time.NewTicker(time.Duration(intervalMinutes) * time.Minute)
 	defer ticker.Stop()
 
-	// Create ticker for periodic integration status reporting (configurable, default 30 minutes)
-	// This keeps the frontend informed about scanner capabilities
-	integrationStatusTicker := time.NewTicker(time.Duration(integrationStatusIntervalMinutes) * time.Minute)
-	defer integrationStatusTicker.Stop()
-	logger.WithField("interval_minutes", integrationStatusIntervalMinutes).Info("Integration status reporting ticker started")
-
 	// Wait for offset before starting periodic reports
 	// This staggers the reporting times across different agents
 	offsetTimer := time.NewTimer(offset)
@@ -224,9 +212,6 @@ func runService() error {
 					logger.WithError(err).Warn("periodic report failed")
 				}
 			}
-		case <-integrationStatusTicker.C:
-			// Periodically report integration status to keep frontend updated
-			go reportIntegrationStatus(ctx)
 		case m := <-messages:
 			switch m.kind {
 			case "settings_update":
@@ -273,6 +258,9 @@ func runService() error {
 				if err := updateAgent(); err != nil {
 					logger.WithError(err).Warn("update_agent failed")
 				}
+			case "refresh_integration_status":
+				logger.Info("Refreshing integration status on server request...")
+				go reportIntegrationStatus(ctx)
 			case "update_notification":
 				logger.WithField("version", m.version).Info("Update notification received from server")
 				if m.force {
@@ -445,68 +433,95 @@ func reportIntegrationStatus(ctx context.Context) {
 
 	// Report compliance integration status if enabled
 	if cfgManager.IsIntegrationEnabled("compliance") {
-		complianceInteg := compliance.New(logger)
-		if complianceInteg.IsAvailable() {
-			// Get scanner details
-			openscapScanner := compliance.NewOpenSCAPScanner(logger)
-			scannerDetails := openscapScanner.GetScannerDetails()
+		// Create scanners to check actual availability
+		openscapScanner := compliance.NewOpenSCAPScanner(logger)
+		dockerBenchScanner := compliance.NewDockerBenchScanner(logger)
+		oscapDockerScanner := compliance.NewOscapDockerScanner(logger)
 
-			// Build components status map
-			components := make(map[string]string)
+		// Get scanner details (includes OS info, profiles, etc.)
+		scannerDetails := openscapScanner.GetScannerDetails()
+
+		// Build components status map based on ACTUAL availability
+		components := make(map[string]string)
+
+		// Check OpenSCAP availability
+		if openscapScanner.IsAvailable() {
 			components["openscap"] = "ready"
+		} else {
+			components["openscap"] = "failed"
+		}
 
-			// Add Docker Bench and oscap-docker info if available
-			dockerBenchScanner := compliance.NewDockerBenchScanner(logger)
-			scannerDetails.DockerBenchAvailable = dockerBenchScanner.IsAvailable()
+		// Check Docker integration and related tools
+		dockerIntegrationEnabled := cfgManager.IsIntegrationEnabled("docker")
+		scannerDetails.DockerBenchAvailable = dockerBenchScanner.IsAvailable()
 
-			// Check if Docker integration is enabled
-			dockerIntegrationEnabled := cfgManager.IsIntegrationEnabled("docker")
-			if dockerIntegrationEnabled {
-				if dockerBenchScanner.IsAvailable() {
-					components["docker-bench"] = "ready"
-					scannerDetails.AvailableProfiles = append(scannerDetails.AvailableProfiles, models.ScanProfileInfo{
-						ID:          "docker-bench",
-						Name:        "Docker Bench for Security",
-						Description: "CIS Docker Benchmark security checks",
-						Type:        "docker-bench",
-					})
-				} else {
-					components["docker-bench"] = "unavailable"
-				}
-
-				// Add oscap-docker info for container image CVE scanning
-				oscapDockerScanner := compliance.NewOscapDockerScanner(logger)
-				scannerDetails.OscapDockerAvailable = oscapDockerScanner.IsAvailable()
-				if oscapDockerScanner.IsAvailable() {
-					components["oscap-docker"] = "ready"
-					scannerDetails.AvailableProfiles = append(scannerDetails.AvailableProfiles, models.ScanProfileInfo{
-						ID:          "docker-image-cve",
-						Name:        "Docker Image CVE Scan",
-						Description: "Scan Docker images for known CVEs using OpenSCAP",
-						Type:        "oscap-docker",
-						Category:    "docker",
-					})
-				} else {
-					components["oscap-docker"] = "unavailable"
-				}
+		if dockerIntegrationEnabled {
+			if dockerBenchScanner.IsAvailable() {
+				components["docker-bench"] = "ready"
+				scannerDetails.AvailableProfiles = append(scannerDetails.AvailableProfiles, models.ScanProfileInfo{
+					ID:          "docker-bench",
+					Name:        "Docker Bench for Security",
+					Description: "CIS Docker Benchmark security checks",
+					Type:        "docker-bench",
+				})
 			} else {
-				// Docker integration not enabled - mark as unavailable
-				components["docker-bench"] = "unavailable"
-				components["oscap-docker"] = "unavailable"
+				components["docker-bench"] = "failed"
 			}
 
-			if err := httpClient.SendIntegrationSetupStatus(ctx, &models.IntegrationSetupStatus{
-				Integration: "compliance",
-				Enabled:     true,
-				Status:      "ready",
-				Message:     "Compliance scanner ready",
-				Components:  components,
-				ScannerInfo: scannerDetails,
-			}); err != nil {
-				logger.WithError(err).Warn("Failed to report compliance status on startup")
+			// Check oscap-docker for container image CVE scanning
+			scannerDetails.OscapDockerAvailable = oscapDockerScanner.IsAvailable()
+			if oscapDockerScanner.IsAvailable() {
+				components["oscap-docker"] = "ready"
+				scannerDetails.AvailableProfiles = append(scannerDetails.AvailableProfiles, models.ScanProfileInfo{
+					ID:          "docker-image-cve",
+					Name:        "Docker Image CVE Scan",
+					Description: "Scan Docker images for known CVEs using OpenSCAP",
+					Type:        "oscap-docker",
+					Category:    "docker",
+				})
 			} else {
-				logger.Info("✅ Compliance integration status reported")
+				components["oscap-docker"] = "failed"
 			}
+		} else {
+			// Docker integration not enabled - mark as unavailable (not failed)
+			components["docker-bench"] = "unavailable"
+			components["oscap-docker"] = "unavailable"
+		}
+
+		// Determine overall status based on component statuses
+		overallStatus := "ready"
+		statusMessage := "Compliance tools ready"
+		hasReady := false
+		hasFailed := false
+
+		for _, status := range components {
+			if status == "ready" {
+				hasReady = true
+			}
+			if status == "failed" {
+				hasFailed = true
+			}
+		}
+
+		if hasFailed && hasReady {
+			overallStatus = "partial"
+			statusMessage = "Some compliance tools failed to install"
+		} else if hasFailed && !hasReady {
+			overallStatus = "error"
+			statusMessage = "All compliance tools failed to install"
+		}
+
+		if err := httpClient.SendIntegrationSetupStatus(ctx, &models.IntegrationSetupStatus{
+			Integration: "compliance",
+			Enabled:     true,
+			Status:      overallStatus,
+			Message:     statusMessage,
+			Components:  components,
+			ScannerInfo: scannerDetails,
+		}); err != nil {
+			logger.WithError(err).Warn("Failed to report compliance status on startup")
+		} else {
+			logger.WithField("status", overallStatus).Info("✅ Compliance integration status reported")
 		}
 	}
 
@@ -803,6 +818,9 @@ func connectOnce(out chan<- wsMsg, dockerEvents <-chan interface{}) error {
 			case "update_agent":
 				logger.Info("update_agent received")
 				out <- wsMsg{kind: "update_agent"}
+			case "refresh_integration_status":
+				logger.Info("refresh_integration_status received")
+				out <- wsMsg{kind: "refresh_integration_status"}
 			case "update_notification":
 				logger.WithFields(map[string]interface{}{
 					"version": payload.Version,

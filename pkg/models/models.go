@@ -103,13 +103,12 @@ type ReportPayload struct {
 
 // PingResponse represents server ping response
 type PingResponse struct {
-	Message                   string             `json:"message"`
-	Timestamp                 string             `json:"timestamp"`
-	FriendlyName              string             `json:"friendlyName"`
-	AgentStartup              bool               `json:"agentStartup,omitempty"`
-	IntegrationStatusInterval int                `json:"integrationStatusInterval,omitempty"` // How often to report integration status (minutes)
-	Integrations              map[string]bool    `json:"integrations,omitempty"`              // Server-side integration enable states
-	CrontabUpdate             *CrontabUpdateInfo `json:"crontabUpdate,omitempty"`
+	Message       string             `json:"message"`
+	Timestamp     string             `json:"timestamp"`
+	FriendlyName  string             `json:"friendlyName"`
+	AgentStartup  bool               `json:"agentStartup,omitempty"`
+	Integrations  map[string]bool    `json:"integrations,omitempty"` // Server-side integration enable states
+	CrontabUpdate *CrontabUpdateInfo `json:"crontabUpdate,omitempty"`
 }
 
 // UpdateResponse represents server update response
