@@ -230,6 +230,9 @@ func (s *DockerBenchScanner) parseOutput(output string) *models.ComplianceScan {
 		Results:     make([]models.ComplianceResult, 0),
 	}
 
+	// Debug: track status counts as we parse
+	debugStatusCounts := map[string]int{}
+
 	// Parse patterns
 	// [PASS] 1.1.1 - Ensure a separate partition for containers has been created
 	// [WARN] 1.1.2 - Ensure only trusted users are allowed to control Docker daemon
@@ -318,6 +321,9 @@ func (s *DockerBenchScanner) parseOutput(output string) *models.ComplianceScan {
 				// Map status
 				resultStatus := s.mapStatus(status)
 
+				// Debug: track what we're actually parsing
+				debugStatusCounts[resultStatus]++
+
 				// Update counters
 				switch resultStatus {
 				case "pass":
@@ -326,6 +332,12 @@ func (s *DockerBenchScanner) parseOutput(output string) *models.ComplianceScan {
 					scan.Failed++
 				case "warn":
 					scan.Warnings++
+					// Debug: log when we find a warning
+					s.logger.WithFields(logrus.Fields{
+						"rule_id": ruleID,
+						"title":   title,
+						"status":  resultStatus,
+					}).Debug("Parsed Docker Bench warning")
 				case "skip":
 					scan.Skipped++
 				}
@@ -354,6 +366,22 @@ func (s *DockerBenchScanner) parseOutput(output string) *models.ComplianceScan {
 			scan.Score = float64(scan.Passed) / float64(applicable) * 100
 		}
 	}
+
+	// Debug: log parsed results summary
+	resultStatusCounts := map[string]int{}
+	for _, r := range scan.Results {
+		resultStatusCounts[r.Status]++
+	}
+	s.logger.WithFields(logrus.Fields{
+		"parse_counts":    debugStatusCounts,
+		"result_counts":   resultStatusCounts,
+		"total_results":   len(scan.Results),
+		"scan_passed":     scan.Passed,
+		"scan_failed":     scan.Failed,
+		"scan_warnings":   scan.Warnings,
+		"scan_skipped":    scan.Skipped,
+		"scan_total":      scan.TotalRules,
+	}).Info("Docker Bench parsing complete - debug status comparison")
 
 	return scan
 }

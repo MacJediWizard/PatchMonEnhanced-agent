@@ -1458,6 +1458,25 @@ func runComplianceScanWithOptions(options *models.ComplianceScanOptions) error {
 		AgentVersion:   version.Version,
 	}
 
+	// Debug: log what we're about to send
+	for i, scan := range payload.Scans {
+		statusCounts := map[string]int{}
+		for _, r := range scan.Results {
+			statusCounts[r.Status]++
+		}
+		logger.WithFields(map[string]interface{}{
+			"scan_index":       i,
+			"profile_name":     scan.ProfileName,
+			"profile_type":     scan.ProfileType,
+			"total_results":    len(scan.Results),
+			"result_statuses":  statusCounts,
+			"scan_passed":      scan.Passed,
+			"scan_failed":      scan.Failed,
+			"scan_warnings":    scan.Warnings,
+			"scan_skipped":     scan.Skipped,
+		}).Info("DEBUG: Compliance payload scan details before sending")
+	}
+
 	// Send to server
 	httpClient := client.New(cfgManager, logger)
 	sendCtx, sendCancel := context.WithTimeout(context.Background(), 2*time.Minute)
