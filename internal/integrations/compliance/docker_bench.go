@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -97,36 +98,80 @@ func (s *DockerBenchScanner) RunScan(ctx context.Context) (*models.ComplianceSca
 		"--pid", "host",
 		"--userns", "host",
 		"--cap-add", "audit_control",
-		"-v", "/etc:/etc:ro",
-		"-v", "/lib/systemd/system:/lib/systemd/system:ro",
-		"-v", "/usr/bin/containerd:/usr/bin/containerd:ro",
-		"-v", "/usr/bin/runc:/usr/bin/runc:ro",
-		"-v", "/usr/lib/systemd:/usr/lib/systemd:ro",
-		"-v", "/var/lib:/var/lib:ro",
-		"-v", "/var/run/docker.sock:/var/run/docker.sock:ro",
-		"--label", "docker_bench_security",
-		dockerBenchImage,
 	}
+
+	// Required mounts
+	requiredMounts := []string{
+		"/etc:/etc:ro",
+		"/var/lib:/var/lib:ro",
+		"/var/run/docker.sock:/var/run/docker.sock:ro",
+	}
+
+	// Optional mounts - only add if path exists
+	optionalMounts := map[string]string{
+		"/lib/systemd/system":  "/lib/systemd/system:/lib/systemd/system:ro",
+		"/usr/bin/containerd":  "/usr/bin/containerd:/usr/bin/containerd:ro",
+		"/usr/bin/runc":        "/usr/bin/runc:/usr/bin/runc:ro",
+		"/usr/lib/systemd":     "/usr/lib/systemd:/usr/lib/systemd:ro",
+	}
+
+	// Add required mounts
+	for _, mount := range requiredMounts {
+		args = append(args, "-v", mount)
+	}
+
+	// Add optional mounts only if source path exists
+	for path, mount := range optionalMounts {
+		if _, err := os.Stat(path); err == nil {
+			args = append(args, "-v", mount)
+		} else {
+			s.logger.WithField("path", path).Debug("Optional mount path not found, skipping")
+		}
+	}
+
+	args = append(args, "--label", "docker_bench_security", dockerBenchImage)
 
 	s.logger.Debug("Running Docker Bench for Security...")
 
 	cmd := exec.CommandContext(ctx, dockerBinary, args...)
 	output, err := cmd.CombinedOutput()
 
+	outputStr := string(output)
+	outputLen := len(outputStr)
+
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("scan cancelled: %w", ctx.Err())
 		}
 		// Docker Bench may exit non-zero on failures, parse output anyway
-		s.logger.WithError(err).Debug("Docker Bench exited with error, parsing output")
+		s.logger.WithError(err).WithField("output_length", outputLen).Debug("Docker Bench exited with error, parsing output")
+	}
+
+	// Log output for debugging if it's short (likely an error)
+	if outputLen == 0 {
+		s.logger.Warn("Docker Bench produced no output - container may have failed to start")
+	} else if outputLen < 500 {
+		s.logger.WithField("output", outputStr).Debug("Docker Bench produced short output")
+	} else {
+		s.logger.WithField("output_length", outputLen).Debug("Docker Bench output captured")
 	}
 
 	// Parse the output
-	scan := s.parseOutput(string(output))
+	scan := s.parseOutput(outputStr)
 	scan.StartedAt = startTime
 	now := time.Now()
 	scan.CompletedAt = &now
 	scan.Status = "completed"
+
+	// Log warning if no results were parsed
+	if scan.TotalRules == 0 && outputLen > 0 {
+		// Log first 500 chars to help debug parsing issues
+		preview := outputStr
+		if len(preview) > 500 {
+			preview = preview[:500] + "..."
+		}
+		s.logger.WithField("output_preview", preview).Warn("Docker Bench output received but no rules parsed - check output format")
+	}
 
 	return scan, nil
 }
