@@ -161,15 +161,7 @@ func runService() error {
 		logger.Info("✅ Startup notification sent to server")
 	}
 
-	// initial report on boot
-	logger.Info("Sending initial report on startup...")
-	if err := sendReport(false); err != nil {
-		logger.WithError(err).Warn("initial report failed")
-	} else {
-		logger.Info("✅ Initial report sent successfully")
-	}
-
-	// start websocket loop
+	// Start websocket loop FIRST so agent appears online immediately
 	logger.Info("Establishing WebSocket connection...")
 	messages := make(chan wsMsg, 10)
 	dockerEvents := make(chan interface{}, 100)
@@ -182,6 +174,17 @@ func runService() error {
 	go func() {
 		time.Sleep(2 * time.Second)
 		reportIntegrationStatus(ctx)
+	}()
+
+	// Run initial report in background so it doesn't block WebSocket
+	// Compliance scans can take 5-10 minutes, we don't want agent to appear offline
+	go func() {
+		logger.Info("Sending initial report on startup (background)...")
+		if err := sendReport(false); err != nil {
+			logger.WithError(err).Warn("initial report failed")
+		} else {
+			logger.Info("✅ Initial report sent successfully")
+		}
 	}()
 
 	// Create ticker with initial interval for package reports
