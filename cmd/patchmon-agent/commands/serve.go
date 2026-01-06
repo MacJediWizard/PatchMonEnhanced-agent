@@ -261,6 +261,9 @@ func runService() error {
 			case "refresh_integration_status":
 				logger.Info("Refreshing integration status on server request...")
 				go reportIntegrationStatus(ctx)
+			case "docker_inventory_refresh":
+				logger.Info("Refreshing Docker inventory on server request...")
+				go refreshDockerInventory(ctx)
 			case "update_notification":
 				logger.WithField("version", m.version).Info("Update notification received from server")
 				if m.force {
@@ -549,6 +552,80 @@ func reportIntegrationStatus(ctx context.Context) {
 	}
 }
 
+// refreshDockerInventory collects and sends Docker inventory data on demand
+// Called when the server requests a Docker data refresh
+func refreshDockerInventory(ctx context.Context) {
+	logger.Info("Starting Docker inventory refresh...")
+
+	// Check if Docker integration is enabled
+	if !cfgManager.IsIntegrationEnabled("docker") {
+		logger.Warn("Docker integration is not enabled, skipping refresh")
+		return
+	}
+
+	// Create Docker integration
+	dockerInteg := docker.New(logger)
+	if !dockerInteg.IsAvailable() {
+		logger.Warn("Docker is not available on this system")
+		return
+	}
+
+	// Collect Docker data with timeout
+	collectCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	dockerData, err := dockerInteg.Collect(collectCtx)
+	if err != nil {
+		logger.WithError(err).Warn("Failed to collect Docker data")
+		return
+	}
+
+	// Get system info for payload
+	systemDetector := system.New(logger)
+	hostname, _ := systemDetector.GetHostname()
+	machineID := systemDetector.GetMachineID()
+
+	// Extract Docker data from integration data
+	data, ok := dockerData.Data.(*models.DockerData)
+	if !ok {
+		logger.Warn("Failed to extract Docker data from integration")
+		return
+	}
+
+	// Create payload
+	payload := &models.DockerPayload{
+		DockerData:   *data,
+		Hostname:     hostname,
+		MachineID:    machineID,
+		AgentVersion: version.Version,
+	}
+
+	logger.WithFields(map[string]interface{}{
+		"containers": len(data.Containers),
+		"images":     len(data.Images),
+		"volumes":    len(data.Volumes),
+		"networks":   len(data.Networks),
+	}).Info("Sending Docker inventory to server...")
+
+	// Create HTTP client and send data
+	httpClient := client.New(cfgManager, logger)
+	sendCtx, sendCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer sendCancel()
+
+	response, err := httpClient.SendDockerData(sendCtx, payload)
+	if err != nil {
+		logger.WithError(err).Warn("Failed to send Docker inventory")
+		return
+	}
+
+	logger.WithFields(map[string]interface{}{
+		"containers": response.ContainersReceived,
+		"images":     response.ImagesReceived,
+		"volumes":    response.VolumesReceived,
+		"networks":   response.NetworksReceived,
+	}).Info("Docker inventory refresh completed successfully")
+}
+
 // startIntegrationMonitoring starts real-time monitoring for integrations that support it
 func startIntegrationMonitoring(ctx context.Context, eventChan chan<- interface{}) {
 	// Create integration manager
@@ -827,6 +904,9 @@ func connectOnce(out chan<- wsMsg, dockerEvents <-chan interface{}) error {
 			case "refresh_integration_status":
 				logger.Info("refresh_integration_status received")
 				out <- wsMsg{kind: "refresh_integration_status"}
+			case "docker_inventory_refresh":
+				logger.Info("docker_inventory_refresh received")
+				out <- wsMsg{kind: "docker_inventory_refresh"}
 			case "update_notification":
 				logger.WithFields(map[string]interface{}{
 					"version": payload.Version,
