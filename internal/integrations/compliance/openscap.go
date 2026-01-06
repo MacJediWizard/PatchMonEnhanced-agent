@@ -996,11 +996,30 @@ func (s *OpenSCAPScanner) RunScanWithOptions(ctx context.Context, options *model
 		"profile_id":  profileID,
 		"content":     contentFile,
 		"remediation": options.EnableRemediation,
-	}).Debug("Running OpenSCAP scan")
+	}).Info("Starting OpenSCAP scan (this may take several minutes)...")
 
-	// Run oscap
+	// Run oscap with progress logging
 	cmd := exec.CommandContext(ctx, oscapBinary, args...)
+
+	// Start a goroutine to log progress every 30 seconds
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		elapsed := 0
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				elapsed += 30
+				s.logger.WithField("elapsed_seconds", elapsed).Info("OpenSCAP scan still running...")
+			}
+		}
+	}()
+
 	output, err := cmd.CombinedOutput()
+	close(done)
 
 	// oscap returns non-zero exit code if there are failures, which is expected
 	// We only care about actual execution errors
