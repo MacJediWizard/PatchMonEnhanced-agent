@@ -124,7 +124,7 @@ func (s *DockerBenchScanner) RunScan(ctx context.Context) (*models.ComplianceSca
 		for _, path := range socketPaths {
 			if _, err := os.Stat(path); err == nil {
 				dockerSocket = path
-				s.logger.WithField("socket", dockerSocket).Debug("Found Docker socket")
+				s.logger.WithField("socket", dockerSocket).Info("Found Docker socket")
 				break
 			}
 		}
@@ -134,11 +134,21 @@ func (s *DockerBenchScanner) RunScan(ctx context.Context) (*models.ComplianceSca
 		return nil, fmt.Errorf("Docker socket not found at any known location")
 	}
 
-	// Required mounts
+	// Verify socket is accessible
+	socketInfo, err := os.Stat(dockerSocket)
+	if err != nil {
+		return nil, fmt.Errorf("Docker socket not accessible: %w", err)
+	}
+	s.logger.WithFields(logrus.Fields{
+		"socket": dockerSocket,
+		"mode":   socketInfo.Mode().String(),
+	}).Info("Docker socket verified")
+
+	// Required mounts - socket needs read-write for Docker Bench to query daemon
 	requiredMounts := []string{
 		"/etc:/etc:ro",
 		"/var/lib:/var/lib:ro",
-		dockerSocket + ":/var/run/docker.sock:ro", // Map found socket to expected location in container
+		dockerSocket + ":/var/run/docker.sock", // Map found socket to expected location in container
 	}
 
 	// Optional mounts - only add if path exists
@@ -165,7 +175,7 @@ func (s *DockerBenchScanner) RunScan(ctx context.Context) (*models.ComplianceSca
 
 	args = append(args, "--label", "docker_bench_security", dockerBenchImage)
 
-	s.logger.Debug("Running Docker Bench for Security...")
+	s.logger.WithField("command", "docker "+strings.Join(args, " ")).Info("Running Docker Bench for Security...")
 
 	cmd := exec.CommandContext(ctx, dockerBinary, args...)
 	output, err := cmd.CombinedOutput()

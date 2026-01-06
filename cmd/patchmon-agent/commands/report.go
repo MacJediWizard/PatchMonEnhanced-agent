@@ -330,8 +330,8 @@ func sendIntegrationData() {
 	// Future: integrationMgr.Register(kubernetes.New(logger))
 
 	// Discover and collect from all available integrations
-	// 10 minute timeout to allow OpenSCAP scans to complete (they can take 2-5 minutes)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	// 15 minute timeout to allow OpenSCAP scans to complete (they can take 5-10+ minutes on complex systems)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
 	integrationData := integrationMgr.CollectAll(ctx)

@@ -1416,8 +1416,8 @@ func runComplianceScanWithOptions(options *models.ComplianceScanOptions) error {
 	// Send progress: evaluating
 	sendComplianceProgress("evaluating", profileName, "Running OpenSCAP evaluation (this may take several minutes)...", 15, "")
 
-	// Run the scan with options
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	// Run the scan with options (15 minutes to allow for complex systems)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
 	integrationData, err := complianceInteg.CollectWithOptions(ctx, options)
