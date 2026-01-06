@@ -100,11 +100,45 @@ func (s *DockerBenchScanner) RunScan(ctx context.Context) (*models.ComplianceSca
 		"--cap-add", "audit_control",
 	}
 
+	// Find the Docker socket - check common locations
+	dockerSocket := ""
+	socketPaths := []string{
+		"/var/run/docker.sock",
+		"/run/docker.sock",
+		"/docker.sock", // Sometimes mounted here in containers
+	}
+
+	// Check DOCKER_HOST environment variable first
+	if dockerHost := os.Getenv("DOCKER_HOST"); dockerHost != "" {
+		if strings.HasPrefix(dockerHost, "unix://") {
+			socketPath := strings.TrimPrefix(dockerHost, "unix://")
+			if _, err := os.Stat(socketPath); err == nil {
+				dockerSocket = socketPath
+				s.logger.WithField("socket", dockerSocket).Debug("Using Docker socket from DOCKER_HOST")
+			}
+		}
+	}
+
+	// If not found via env, check common paths
+	if dockerSocket == "" {
+		for _, path := range socketPaths {
+			if _, err := os.Stat(path); err == nil {
+				dockerSocket = path
+				s.logger.WithField("socket", dockerSocket).Debug("Found Docker socket")
+				break
+			}
+		}
+	}
+
+	if dockerSocket == "" {
+		return nil, fmt.Errorf("Docker socket not found at any known location")
+	}
+
 	// Required mounts
 	requiredMounts := []string{
 		"/etc:/etc:ro",
 		"/var/lib:/var/lib:ro",
-		"/var/run/docker.sock:/var/run/docker.sock:ro",
+		dockerSocket + ":/var/run/docker.sock:ro", // Map found socket to expected location in container
 	}
 
 	// Optional mounts - only add if path exists
