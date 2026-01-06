@@ -18,8 +18,9 @@ import (
 const (
 	dockerBinary = "docker"
 	// Docker Bench for Security image
-	// We use the latest tag for reliability - the image is from Docker's official repo
-	dockerBenchImage = "docker/docker-bench-security:latest"
+	// Using jauderho's maintained image - the official docker/docker-bench-security is deprecated
+	// and uses an ancient Docker client (API 1.38) incompatible with modern Docker daemons (API 1.44+)
+	dockerBenchImage = "jauderho/docker-bench-security:latest"
 )
 
 // DockerBenchScanner handles Docker Bench for Security scanning
