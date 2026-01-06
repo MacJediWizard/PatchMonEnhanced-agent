@@ -480,7 +480,13 @@ func reportIntegrationStatus(ctx context.Context) {
 					Category:    "docker",
 				})
 			} else {
-				components["oscap-docker"] = "failed"
+				// Check if we're on Ubuntu/Debian where oscap-docker is not supported
+				if _, err := exec.LookPath("apt-get"); err == nil {
+					// Ubuntu/Debian - oscap-docker requires 'atomic' package which isn't available
+					components["oscap-docker"] = "unavailable"
+				} else {
+					components["oscap-docker"] = "failed"
+				}
 			}
 		} else {
 			// Docker integration not enabled - mark as unavailable (not failed)
@@ -945,8 +951,15 @@ func toggleIntegration(integrationName string, enabled bool) error {
 				oscapDockerScanner := compliance.NewOscapDockerScanner(logger)
 				if !oscapDockerScanner.IsAvailable() {
 					if err := oscapDockerScanner.EnsureInstalled(); err != nil {
-						logger.WithError(err).Warn("Failed to install oscap-docker (container CVE scanning won't be available)")
-						components["oscap-docker"] = "failed"
+						// Check if it's a platform limitation (not available on this OS) vs installation failure
+						errMsg := err.Error()
+						if strings.Contains(errMsg, "not available") || strings.Contains(errMsg, "not supported") {
+							logger.WithError(err).Info("oscap-docker not available on this platform")
+							components["oscap-docker"] = "unavailable"
+						} else {
+							logger.WithError(err).Warn("Failed to install oscap-docker (container CVE scanning won't be available)")
+							components["oscap-docker"] = "failed"
+						}
 					} else {
 						logger.Info("oscap-docker installed successfully")
 						components["oscap-docker"] = "ready"

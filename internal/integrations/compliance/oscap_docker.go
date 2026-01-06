@@ -343,22 +343,13 @@ func (s *OscapDockerScanner) EnsureInstalled() error {
 
 	// Try different package managers with appropriate packages
 	if _, err := exec.LookPath("apt-get"); err == nil {
-		// Debian/Ubuntu - oscap-docker is part of openscap-utils and requires python3-openscap
-		s.logger.Info("Installing openscap-utils and python3-openscap for Ubuntu/Debian...")
-
-		// First update apt cache
-		updateCmd := exec.CommandContext(ctx, "apt-get", "update")
-		updateCmd.Run() // Ignore errors, continue with install
-
-		// Install required packages - openscap-utils includes oscap-docker
-		installCmd := exec.CommandContext(ctx, "apt-get", "install", "-y", "openscap-utils", "python3-openscap")
-		output, err := installCmd.CombinedOutput()
-		if err != nil {
-			s.logger.WithError(err).WithField("output", string(output)).Warn("Failed to install openscap-utils")
-			return fmt.Errorf("failed to install openscap-utils: %w", err)
-		}
+		// Debian/Ubuntu - oscap-docker requires the 'atomic' package which is NOT available on Ubuntu
+		// oscap-docker is primarily a Red Hat/Fedora tool that depends on atomic
+		// See: https://answers.launchpad.net/ubuntu/+source/openscap/+question/242354
+		s.logger.Warn("oscap-docker is not supported on Ubuntu/Debian - it requires the 'atomic' package which is only available on RHEL/Fedora")
+		return fmt.Errorf("oscap-docker is not available on Ubuntu/Debian (requires 'atomic' package)")
 	} else if _, err := exec.LookPath("dnf"); err == nil {
-		// RHEL 8+/Fedora
+		// RHEL 8+/Fedora - oscap-docker is available via openscap-containers
 		s.logger.Info("Installing openscap-containers for RHEL/Fedora...")
 		installCmd := exec.CommandContext(ctx, "dnf", "install", "-y", "openscap-containers")
 		output, err := installCmd.CombinedOutput()
