@@ -93,8 +93,17 @@ func (c *Integration) CollectWithOptions(ctx context.Context, options *models.Co
 		},
 	}
 
-	// Run OpenSCAP scan if available
-	if c.openscap.IsAvailable() {
+	// Determine which scans to run based on profile ID
+	profileID := ""
+	if options != nil && options.ProfileID != "" {
+		profileID = options.ProfileID
+	}
+
+	// Check if this is a Docker Bench specific scan
+	isDockerBenchOnly := profileID == "docker-bench"
+
+	// Run OpenSCAP scan if available and not a Docker Bench only request
+	if c.openscap.IsAvailable() && !isDockerBenchOnly {
 		var scan *models.ComplianceScan
 		var err error
 
@@ -103,11 +112,11 @@ func (c *Integration) CollectWithOptions(ctx context.Context, options *models.Co
 			scan, err = c.openscap.RunScanWithOptions(ctx, options)
 		} else {
 			c.logger.Info("Running OpenSCAP CIS benchmark scan...")
-			profileID := "level1_server"
-			if options != nil && options.ProfileID != "" {
-				profileID = options.ProfileID
+			scanProfileID := "level1_server"
+			if profileID != "" {
+				scanProfileID = profileID
 			}
-			scan, err = c.openscap.RunScan(ctx, profileID)
+			scan, err = c.openscap.RunScan(ctx, scanProfileID)
 		}
 
 		if err != nil {
@@ -136,28 +145,34 @@ func (c *Integration) CollectWithOptions(ctx context.Context, options *models.Co
 	}
 
 	// Run Docker Bench scan if Docker integration is enabled AND Docker is available
-	if dockerBenchEffectivelyAvailable {
+	// Always run if docker-bench profile is specifically selected, or if running all profiles
+	runDockerBench := dockerBenchEffectivelyAvailable && (isDockerBenchOnly || profileID == "" || profileID == "all")
+	if runDockerBench {
 		c.logger.Info("Running Docker Bench for Security scan...")
 		scan, err := c.dockerBench.RunScan(ctx)
 		if err != nil {
 			c.logger.WithError(err).Warn("Docker Bench scan failed")
-			// Add failed scan result
+			// Add failed scan result with truncated error message
+			errMsg := err.Error()
+			if len(errMsg) > 500 {
+				errMsg = errMsg[:500] + "... (truncated)"
+			}
 			now := time.Now()
 			complianceData.Scans = append(complianceData.Scans, models.ComplianceScan{
-				ProfileName: "docker-bench",
+				ProfileName: "Docker Bench for Security",
 				ProfileType: "docker-bench",
 				Status:      "failed",
 				StartedAt:   startTime,
 				CompletedAt: &now,
-				Error:       err.Error(),
+				Error:       errMsg,
 			})
 		} else {
 			complianceData.Scans = append(complianceData.Scans, *scan)
 			c.logger.WithFields(logrus.Fields{
-				"profile": scan.ProfileName,
-				"score":   fmt.Sprintf("%.1f%%", scan.Score),
-				"passed":  scan.Passed,
-				"failed":  scan.Failed,
+				"profile":  scan.ProfileName,
+				"score":    fmt.Sprintf("%.1f%%", scan.Score),
+				"passed":   scan.Passed,
+				"failed":   scan.Failed,
 				"warnings": scan.Warnings,
 			}).Info("Docker Bench scan completed")
 		}

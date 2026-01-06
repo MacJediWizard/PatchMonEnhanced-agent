@@ -391,7 +391,12 @@ func (s *OpenSCAPScanner) EnsureInstalled() error {
 				return fmt.Errorf("installation timed out after 5 minutes")
 			}
 			s.logger.WithError(err).WithField("output", string(output)).Warn("Failed to install OpenSCAP core packages")
-			return fmt.Errorf("failed to install OpenSCAP: %w\nOutput: %s", err, string(output))
+			// Truncate output for error message
+			outputStr := string(output)
+			if len(outputStr) > 500 {
+				outputStr = outputStr[:500] + "... (truncated)"
+			}
+			return fmt.Errorf("failed to install OpenSCAP: %w - %s", err, outputStr)
 		}
 		s.logger.Info("OpenSCAP core packages installed successfully")
 
@@ -440,7 +445,11 @@ func (s *OpenSCAPScanner) EnsureInstalled() error {
 				return fmt.Errorf("installation timed out after 5 minutes")
 			}
 			s.logger.WithError(err).WithField("output", string(output)).Warn("Failed to install OpenSCAP")
-			return fmt.Errorf("failed to install OpenSCAP: %w\nOutput: %s", err, string(output))
+			outputStr := string(output)
+			if len(outputStr) > 500 {
+				outputStr = outputStr[:500] + "... (truncated)"
+			}
+			return fmt.Errorf("failed to install OpenSCAP: %w - %s", err, outputStr)
 		}
 
 	case "suse":
@@ -454,7 +463,11 @@ func (s *OpenSCAPScanner) EnsureInstalled() error {
 				return fmt.Errorf("installation timed out after 5 minutes")
 			}
 			s.logger.WithError(err).WithField("output", string(output)).Warn("Failed to install OpenSCAP")
-			return fmt.Errorf("failed to install OpenSCAP: %w\nOutput: %s", err, string(output))
+			outputStr := string(output)
+			if len(outputStr) > 500 {
+				outputStr = outputStr[:500] + "... (truncated)"
+			}
+			return fmt.Errorf("failed to install OpenSCAP: %w - %s", err, outputStr)
 		}
 
 	default:
@@ -992,13 +1005,22 @@ func (s *OpenSCAPScanner) RunScanWithOptions(ctx context.Context, options *model
 	// oscap returns non-zero exit code if there are failures, which is expected
 	// We only care about actual execution errors
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("scan cancelled or timed out: %w", ctx.Err())
+		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			// Exit code 2 means there were failures - this is normal
+			// Exit code 1 or 2 means there were rule failures - this is normal
 			if exitErr.ExitCode() != 2 && exitErr.ExitCode() != 1 {
-				return nil, fmt.Errorf("oscap execution failed: %w\nOutput: %s", err, string(output))
+				// Truncate output for error message (keep first 500 chars)
+				outputStr := string(output)
+				if len(outputStr) > 500 {
+					outputStr = outputStr[:500] + "... (truncated)"
+				}
+				return nil, fmt.Errorf("oscap execution failed (exit code %d): %s", exitErr.ExitCode(), outputStr)
 			}
-		} else if ctx.Err() != nil {
-			return nil, fmt.Errorf("scan cancelled: %w", ctx.Err())
+		} else {
+			// Other errors (like signal killed)
+			return nil, fmt.Errorf("oscap execution failed: %w", err)
 		}
 	}
 
@@ -1035,7 +1057,12 @@ func (s *OpenSCAPScanner) GenerateRemediationScript(ctx context.Context, results
 	cmd := exec.CommandContext(ctx, oscapBinary, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to generate remediation script: %w\nOutput: %s", err, string(output))
+		// Truncate output for error message
+		outputStr := string(output)
+		if len(outputStr) > 500 {
+			outputStr = outputStr[:500] + "... (truncated)"
+		}
+		return fmt.Errorf("failed to generate remediation script: %w - %s", err, outputStr)
 	}
 
 	s.logger.WithField("output", outputPath).Info("Remediation script generated")
@@ -1067,7 +1094,12 @@ func (s *OpenSCAPScanner) RunOfflineRemediation(ctx context.Context, resultsPath
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			// Non-zero exit is expected if some remediations fail
 			if exitErr.ExitCode() > 2 {
-				return fmt.Errorf("remediation failed: %w\nOutput: %s", err, string(output))
+				// Truncate output for error message
+				outputStr := string(output)
+				if len(outputStr) > 500 {
+					outputStr = outputStr[:500] + "... (truncated)"
+				}
+				return fmt.Errorf("remediation failed (exit code %d): %s", exitErr.ExitCode(), outputStr)
 			}
 		} else {
 			return fmt.Errorf("remediation execution failed: %w", err)
