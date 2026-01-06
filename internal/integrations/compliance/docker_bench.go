@@ -247,10 +247,13 @@ func (s *DockerBenchScanner) parseOutput(output string) *models.ComplianceScan {
 	remediationPattern := regexp.MustCompile(`^\s+\*\s+Remediation:\s*(.+)`)
 	// Pattern for detail/finding lines
 	detailPattern := regexp.MustCompile(`^\s+\*\s+(.+)`)
+	// Pattern for continuation lines (indented text without bullet)
+	continuationPattern := regexp.MustCompile(`^\s{6,}(.+)`)
 
 	scanner := bufio.NewScanner(strings.NewReader(output))
 	currentSection := ""
 	var lastResultIdx int = -1
+	inRemediation := false // Track if we're reading multi-line remediation
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -259,7 +262,25 @@ func (s *DockerBenchScanner) parseOutput(output string) *models.ComplianceScan {
 		if lastResultIdx >= 0 {
 			if matches := remediationPattern.FindStringSubmatch(line); matches != nil {
 				scan.Results[lastResultIdx].Remediation = strings.TrimSpace(matches[1])
+				inRemediation = true
 				continue
+			}
+			// Check for continuation of remediation text (deeply indented lines)
+			if inRemediation {
+				if matches := continuationPattern.FindStringSubmatch(line); matches != nil {
+					// Append to existing remediation
+					scan.Results[lastResultIdx].Remediation += " " + strings.TrimSpace(matches[1])
+					continue
+				} else if strings.TrimSpace(line) == "" {
+					// Empty line ends remediation section
+					inRemediation = false
+				} else if !strings.HasPrefix(strings.TrimSpace(line), "*") && !strings.HasPrefix(line, "[") {
+					// Non-bullet continuation line
+					scan.Results[lastResultIdx].Remediation += " " + strings.TrimSpace(line)
+					continue
+				} else {
+					inRemediation = false
+				}
 			}
 			// Check for detail/finding lines (e.g., "* Running as root: container_name")
 			if matches := detailPattern.FindStringSubmatch(line); matches != nil {
@@ -284,6 +305,7 @@ func (s *DockerBenchScanner) parseOutput(output string) *models.ComplianceScan {
 				currentSection = strings.TrimSpace(parts[1])
 			}
 			lastResultIdx = -1
+			inRemediation = false
 			continue
 		}
 
@@ -319,6 +341,7 @@ func (s *DockerBenchScanner) parseOutput(output string) *models.ComplianceScan {
 					Section: section,
 				})
 				lastResultIdx = len(scan.Results) - 1
+				inRemediation = false // Reset for new result
 				break
 			}
 		}
