@@ -174,7 +174,7 @@ func (s *DockerBenchScanner) RunScan(ctx context.Context) (*models.ComplianceSca
 		}
 	}
 
-	args = append(args, "--label", "docker_bench_security", dockerBenchImage)
+	args = append(args, "--label", "docker_bench_security", dockerBenchImage, "-b")
 
 	s.logger.WithField("command", "docker "+strings.Join(args, " ")).Info("Running Docker Bench for Security...")
 
