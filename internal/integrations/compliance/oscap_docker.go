@@ -335,41 +335,58 @@ func (s *OscapDockerScanner) EnsureInstalled() error {
 		return nil
 	}
 
-	s.logger.Info("Attempting to install oscap-docker (openscap-containers)...")
+	s.logger.Info("Attempting to install oscap-docker...")
 
 	// Detect package manager and install
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	var installCmd *exec.Cmd
-
-	// Try different package managers
+	// Try different package managers with appropriate packages
 	if _, err := exec.LookPath("apt-get"); err == nil {
-		// Debian/Ubuntu
-		installCmd = exec.CommandContext(ctx, "apt-get", "install", "-y", "openscap-containers")
+		// Debian/Ubuntu - oscap-docker is part of openscap-utils and requires python3-openscap
+		s.logger.Info("Installing openscap-utils and python3-openscap for Ubuntu/Debian...")
+
+		// First update apt cache
+		updateCmd := exec.CommandContext(ctx, "apt-get", "update")
+		updateCmd.Run() // Ignore errors, continue with install
+
+		// Install required packages - openscap-utils includes oscap-docker
+		installCmd := exec.CommandContext(ctx, "apt-get", "install", "-y", "openscap-utils", "python3-openscap")
+		output, err := installCmd.CombinedOutput()
+		if err != nil {
+			s.logger.WithError(err).WithField("output", string(output)).Warn("Failed to install openscap-utils")
+			return fmt.Errorf("failed to install openscap-utils: %w", err)
+		}
 	} else if _, err := exec.LookPath("dnf"); err == nil {
-		// RHEL/Fedora
-		installCmd = exec.CommandContext(ctx, "dnf", "install", "-y", "openscap-containers")
+		// RHEL 8+/Fedora
+		s.logger.Info("Installing openscap-containers for RHEL/Fedora...")
+		installCmd := exec.CommandContext(ctx, "dnf", "install", "-y", "openscap-containers")
+		output, err := installCmd.CombinedOutput()
+		if err != nil {
+			s.logger.WithError(err).WithField("output", string(output)).Warn("Failed to install openscap-containers")
+			return fmt.Errorf("failed to install openscap-containers: %w", err)
+		}
 	} else if _, err := exec.LookPath("yum"); err == nil {
-		// Older RHEL/CentOS
-		installCmd = exec.CommandContext(ctx, "yum", "install", "-y", "openscap-containers")
+		// RHEL 7/CentOS 7
+		s.logger.Info("Installing openscap-containers for CentOS/RHEL 7...")
+		installCmd := exec.CommandContext(ctx, "yum", "install", "-y", "openscap-containers")
+		output, err := installCmd.CombinedOutput()
+		if err != nil {
+			s.logger.WithError(err).WithField("output", string(output)).Warn("Failed to install openscap-containers")
+			return fmt.Errorf("failed to install openscap-containers: %w", err)
+		}
 	} else if _, err := exec.LookPath("apk"); err == nil {
-		// Alpine - oscap-docker may not be available, skip
+		// Alpine - oscap-docker is not available
 		s.logger.Warn("oscap-docker is not available on Alpine Linux")
 		return fmt.Errorf("oscap-docker is not available on Alpine Linux")
 	} else {
 		return fmt.Errorf("no supported package manager found")
 	}
 
-	output, err := installCmd.CombinedOutput()
-	if err != nil {
-		s.logger.WithError(err).WithField("output", string(output)).Warn("Failed to install oscap-docker")
-		return fmt.Errorf("failed to install openscap-containers: %w", err)
-	}
-
 	// Re-check availability after install
 	s.checkAvailability()
 	if !s.available {
+		s.logger.Warn("oscap-docker binary not found after installation - it may not be available for this OS version")
 		return fmt.Errorf("oscap-docker still not available after installation attempt")
 	}
 
