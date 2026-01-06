@@ -174,7 +174,8 @@ func (s *DockerBenchScanner) RunScan(ctx context.Context) (*models.ComplianceSca
 		}
 	}
 
-	args = append(args, "--label", "docker_bench_security", dockerBenchImage, "-b")
+	// -b: disable colors, -p: print remediation measures
+	args = append(args, "--label", "docker_bench_security", dockerBenchImage, "-b", "-p")
 
 	s.logger.WithField("command", "docker "+strings.Join(args, " ")).Info("Running Docker Bench for Security...")
 
@@ -242,11 +243,38 @@ func (s *DockerBenchScanner) parseOutput(output string) *models.ComplianceScan {
 		"note": regexp.MustCompile(`\[NOTE\]\s+(\d+\.\d+(?:\.\d+)?)\s+-\s+(.+)`),
 	}
 
+	// Pattern for remediation lines (printed with -p flag)
+	remediationPattern := regexp.MustCompile(`^\s+\*\s+Remediation:\s*(.+)`)
+	// Pattern for detail/finding lines
+	detailPattern := regexp.MustCompile(`^\s+\*\s+(.+)`)
+
 	scanner := bufio.NewScanner(strings.NewReader(output))
 	currentSection := ""
+	var lastResultIdx int = -1
 
 	for scanner.Scan() {
 		line := scanner.Text()
+
+		// Check for remediation line (follows a check result)
+		if lastResultIdx >= 0 {
+			if matches := remediationPattern.FindStringSubmatch(line); matches != nil {
+				scan.Results[lastResultIdx].Remediation = strings.TrimSpace(matches[1])
+				continue
+			}
+			// Check for detail/finding lines (e.g., "* Running as root: container_name")
+			if matches := detailPattern.FindStringSubmatch(line); matches != nil {
+				detail := strings.TrimSpace(matches[1])
+				// Skip if it's a remediation line we already handled
+				if !strings.HasPrefix(detail, "Remediation:") {
+					if scan.Results[lastResultIdx].Finding == "" {
+						scan.Results[lastResultIdx].Finding = detail
+					} else {
+						scan.Results[lastResultIdx].Finding += "; " + detail
+					}
+				}
+				continue
+			}
+		}
 
 		// Detect section headers (e.g., "[INFO] 1 - Host Configuration")
 		if strings.Contains(line, "[INFO]") && !strings.Contains(line, " - ") {
@@ -255,6 +283,7 @@ func (s *DockerBenchScanner) parseOutput(output string) *models.ComplianceScan {
 			if len(parts) >= 2 {
 				currentSection = strings.TrimSpace(parts[1])
 			}
+			lastResultIdx = -1
 			continue
 		}
 
@@ -289,6 +318,7 @@ func (s *DockerBenchScanner) parseOutput(output string) *models.ComplianceScan {
 					Status:  resultStatus,
 					Section: section,
 				})
+				lastResultIdx = len(scan.Results) - 1
 				break
 			}
 		}
