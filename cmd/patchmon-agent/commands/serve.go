@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -674,6 +675,75 @@ type wsMsg struct {
 	scanAllImages        bool   // For docker_image_scan: scan all images on system
 }
 
+// Input validation patterns for WebSocket message fields
+// These prevent command injection by ensuring only safe characters are allowed
+var (
+	// Profile IDs: alphanumeric, underscores, dots, hyphens (e.g., xccdf_org.ssgproject.content_profile_level1_server)
+	validProfileIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_.\-]+$`)
+	// Rule IDs: same as profile IDs (e.g., xccdf_org.ssgproject.content_rule_audit_rules_...)
+	validRuleIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_.\-]+$`)
+	// Docker image names: alphanumeric, slashes, colons, dots, hyphens, underscores (e.g., ubuntu:22.04, myregistry.io/app:v1)
+	validDockerImagePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.\-/:@]*$`)
+	// Docker container names: alphanumeric, underscores, hyphens (e.g., my-container, container_1)
+	validDockerContainerPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_\-]*$`)
+)
+
+// validateProfileID validates a compliance profile ID to prevent command injection
+func validateProfileID(profileID string) error {
+	if profileID == "" {
+		return nil // Empty is allowed - will use default
+	}
+	if len(profileID) > 256 {
+		return fmt.Errorf("profile ID too long (max 256 chars)")
+	}
+	if !validProfileIDPattern.MatchString(profileID) {
+		return fmt.Errorf("invalid profile ID: contains disallowed characters")
+	}
+	return nil
+}
+
+// validateRuleID validates a compliance rule ID to prevent command injection
+func validateRuleID(ruleID string) error {
+	if ruleID == "" {
+		return fmt.Errorf("rule ID is required")
+	}
+	if len(ruleID) > 256 {
+		return fmt.Errorf("rule ID too long (max 256 chars)")
+	}
+	if !validRuleIDPattern.MatchString(ruleID) {
+		return fmt.Errorf("invalid rule ID: contains disallowed characters")
+	}
+	return nil
+}
+
+// validateDockerImageName validates a Docker image name to prevent command injection
+func validateDockerImageName(imageName string) error {
+	if imageName == "" {
+		return nil // Empty is allowed when scanning all images
+	}
+	if len(imageName) > 512 {
+		return fmt.Errorf("image name too long (max 512 chars)")
+	}
+	if !validDockerImagePattern.MatchString(imageName) {
+		return fmt.Errorf("invalid Docker image name: contains disallowed characters")
+	}
+	return nil
+}
+
+// validateDockerContainerName validates a Docker container name to prevent command injection
+func validateDockerContainerName(containerName string) error {
+	if containerName == "" {
+		return nil // Empty is allowed when scanning images
+	}
+	if len(containerName) > 256 {
+		return fmt.Errorf("container name too long (max 256 chars)")
+	}
+	if !validDockerContainerPattern.MatchString(containerName) {
+		return fmt.Errorf("invalid Docker container name: contains disallowed characters")
+	}
+	return nil
+}
+
 // ComplianceScanProgress represents a progress update during compliance scanning
 type ComplianceScanProgress struct {
 	Phase       string  `json:"phase"`        // started, evaluating, parsing, completed, failed
@@ -932,6 +1002,11 @@ func connectOnce(out chan<- wsMsg, dockerEvents <-chan interface{}) error {
 					integrationEnabled: payload.Enabled,
 				}
 			case "compliance_scan":
+				// Validate profile ID to prevent command injection
+				if err := validateProfileID(payload.ProfileID); err != nil {
+					logger.WithError(err).WithField("profile_id", payload.ProfileID).Warn("Invalid profile ID in compliance_scan message")
+					continue
+				}
 				profileType := payload.ProfileType
 				if profileType == "" {
 					profileType = "all"
@@ -953,9 +1028,23 @@ func connectOnce(out chan<- wsMsg, dockerEvents <-chan interface{}) error {
 				out <- wsMsg{kind: "upgrade_ssg"}
 				logger.Info("upgrade_ssg sent to message channel")
 			case "remediate_rule":
+				// Validate rule ID to prevent command injection
+				if err := validateRuleID(payload.RuleID); err != nil {
+					logger.WithError(err).WithField("rule_id", payload.RuleID).Warn("Invalid rule ID in remediate_rule message")
+					continue
+				}
 				logger.WithField("rule_id", payload.RuleID).Info("remediate_rule received")
 				out <- wsMsg{kind: "remediate_rule", ruleID: payload.RuleID}
 			case "docker_image_scan":
+				// Validate Docker image and container names to prevent command injection
+				if err := validateDockerImageName(payload.ImageName); err != nil {
+					logger.WithError(err).WithField("image_name", payload.ImageName).Warn("Invalid image name in docker_image_scan message")
+					continue
+				}
+				if err := validateDockerContainerName(payload.ContainerName); err != nil {
+					logger.WithError(err).WithField("container_name", payload.ContainerName).Warn("Invalid container name in docker_image_scan message")
+					continue
+				}
 				logger.WithFields(map[string]interface{}{
 					"image_name":      payload.ImageName,
 					"container_name":  payload.ContainerName,
