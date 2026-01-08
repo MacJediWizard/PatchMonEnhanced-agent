@@ -323,9 +323,16 @@ func sendIntegrationData() {
 
 	// Register available integrations
 	integrationMgr.Register(docker.New(logger))
-	complianceInteg := compliance.New(logger)
-	complianceInteg.SetDockerIntegrationEnabled(cfgManager.IsIntegrationEnabled("docker"))
-	integrationMgr.Register(complianceInteg)
+
+	// Only register compliance integration if not set to on-demand only
+	// When compliance_on_demand_only is true, compliance scans will only run when triggered from the UI
+	if !cfgManager.IsComplianceOnDemandOnly() {
+		complianceInteg := compliance.New(logger)
+		complianceInteg.SetDockerIntegrationEnabled(cfgManager.IsIntegrationEnabled("docker"))
+		integrationMgr.Register(complianceInteg)
+	} else {
+		logger.Info("Skipping compliance scan during scheduled report (compliance_on_demand_only=true)")
+	}
 	// Future: integrationMgr.Register(proxmox.New(logger))
 	// Future: integrationMgr.Register(kubernetes.New(logger))
 

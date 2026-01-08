@@ -237,6 +237,7 @@ func (m *Manager) SaveConfig() error {
 		}
 	}
 	configViper.Set("integrations", m.config.Integrations)
+	configViper.Set("compliance_on_demand_only", m.config.ComplianceOnDemandOnly)
 
 	if err := configViper.WriteConfigAs(m.configFile); err != nil {
 		return fmt.Errorf("error writing config file: %w", err)
@@ -279,6 +280,17 @@ func (m *Manager) SetIntegrationEnabled(name string, enabled bool) error {
 		m.config.Integrations = make(map[string]bool)
 	}
 	m.config.Integrations[name] = enabled
+	return m.SaveConfig()
+}
+
+// IsComplianceOnDemandOnly returns true if compliance should only run on-demand (not during scheduled reports)
+func (m *Manager) IsComplianceOnDemandOnly() bool {
+	return m.config.ComplianceOnDemandOnly
+}
+
+// SetComplianceOnDemandOnly sets whether compliance should only run on-demand
+func (m *Manager) SetComplianceOnDemandOnly(onDemandOnly bool) error {
+	m.config.ComplianceOnDemandOnly = onDemandOnly
 	return m.SaveConfig()
 }
 
