@@ -340,6 +340,13 @@ func runService() error {
 						logger.Info("Docker image CVE scan completed successfully")
 					}
 				}(m)
+			case "set_compliance_on_demand_only":
+				logger.WithField("on_demand_only", m.complianceOnDemandOnly).Info("Setting compliance on-demand only mode...")
+				if err := cfgManager.SetComplianceOnDemandOnly(m.complianceOnDemandOnly); err != nil {
+					logger.WithError(err).Warn("Failed to set compliance_on_demand_only")
+				} else {
+					logger.WithField("on_demand_only", m.complianceOnDemandOnly).Info("Compliance on-demand only mode updated in config.yml")
+				}
 			}
 		}
 	}
@@ -659,20 +666,21 @@ func startIntegrationMonitoring(ctx context.Context, eventChan chan<- interface{
 }
 
 type wsMsg struct {
-	kind                 string
-	interval             int
-	version              string
-	force                bool
-	integrationName      string
-	integrationEnabled   bool
-	profileType          string // For compliance_scan: openscap, docker-bench, all
-	profileID            string // For compliance_scan: specific XCCDF profile ID
-	enableRemediation    bool   // For compliance_scan: enable auto-remediation
-	fetchRemoteResources bool   // For compliance_scan: fetch remote resources
-	ruleID               string // For remediate_rule: specific rule ID to remediate
-	imageName            string // For docker_image_scan: Docker image to scan
-	containerName        string // For docker_image_scan: Docker container to scan
-	scanAllImages        bool   // For docker_image_scan: scan all images on system
+	kind                   string
+	interval               int
+	version                string
+	force                  bool
+	integrationName        string
+	integrationEnabled     bool
+	profileType            string // For compliance_scan: openscap, docker-bench, all
+	profileID              string // For compliance_scan: specific XCCDF profile ID
+	enableRemediation      bool   // For compliance_scan: enable auto-remediation
+	fetchRemoteResources   bool   // For compliance_scan: fetch remote resources
+	ruleID                 string // For remediate_rule: specific rule ID to remediate
+	imageName              string // For docker_image_scan: Docker image to scan
+	containerName          string // For docker_image_scan: Docker container to scan
+	scanAllImages          bool   // For docker_image_scan: scan all images on system
+	complianceOnDemandOnly bool   // For set_compliance_on_demand_only
 }
 
 // Input validation patterns for WebSocket message fields
@@ -958,6 +966,7 @@ func connectOnce(out chan<- wsMsg, dockerEvents <-chan interface{}) error {
 			ImageName            string `json:"image_name"`             // For docker_image_scan: Docker image to scan
 			ContainerName        string `json:"container_name"`         // For docker_image_scan: container to scan
 			ScanAllImages        bool   `json:"scan_all_images"`        // For docker_image_scan: scan all images
+			OnDemandOnly         bool   `json:"on_demand_only"`         // For set_compliance_on_demand_only
 		}
 		if err := json.Unmarshal(data, &payload); err != nil {
 			logger.WithError(err).WithField("data", string(data)).Warn("Failed to parse WebSocket message")
@@ -1055,6 +1064,12 @@ func connectOnce(out chan<- wsMsg, dockerEvents <-chan interface{}) error {
 					imageName:     payload.ImageName,
 					containerName: payload.ContainerName,
 					scanAllImages: payload.ScanAllImages,
+				}
+			case "set_compliance_on_demand_only":
+				logger.WithField("on_demand_only", payload.OnDemandOnly).Info("set_compliance_on_demand_only received")
+				out <- wsMsg{
+					kind:                   "set_compliance_on_demand_only",
+					complianceOnDemandOnly: payload.OnDemandOnly,
 				}
 			default:
 				if payload.Type != "" && payload.Type != "connected" {
