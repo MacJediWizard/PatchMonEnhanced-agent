@@ -15,18 +15,18 @@ const integrationName = "compliance"
 
 // Integration implements the Integration interface for compliance scanning
 type Integration struct {
-	logger                 *logrus.Logger
-	openscap               *OpenSCAPScanner
-	dockerBench            *DockerBenchScanner
+	logger                   *logrus.Logger
+	openscap                 *OpenSCAPScanner
+	dockerBench              *DockerBenchScanner
 	dockerIntegrationEnabled bool
 }
 
 // New creates a new Compliance integration
 func New(logger *logrus.Logger) *Integration {
 	return &Integration{
-		logger:      logger,
-		openscap:    NewOpenSCAPScanner(logger),
-		dockerBench: NewDockerBenchScanner(logger),
+		logger:                   logger,
+		openscap:                 NewOpenSCAPScanner(logger),
+		dockerBench:              NewDockerBenchScanner(logger),
 		dockerIntegrationEnabled: false,
 	}
 }
@@ -83,8 +83,8 @@ func (c *Integration) CollectWithOptions(ctx context.Context, options *models.Co
 	dockerBenchEffectivelyAvailable := c.dockerIntegrationEnabled && c.dockerBench.IsAvailable()
 
 	complianceData := &models.ComplianceData{
-		Scans:   make([]models.ComplianceScan, 0),
-		OSInfo:  c.openscap.GetOSInfo(),
+		Scans:  make([]models.ComplianceScan, 0),
+		OSInfo: c.openscap.GetOSInfo(),
 		ScannerInfo: models.ComplianceScannerInfo{
 			OpenSCAPAvailable:    c.openscap.IsAvailable(),
 			OpenSCAPVersion:      c.openscap.GetVersion(),

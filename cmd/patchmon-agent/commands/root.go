@@ -134,4 +134,3 @@ func checkRoot() error {
 	}
 	return nil
 }
-

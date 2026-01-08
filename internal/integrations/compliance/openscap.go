@@ -21,31 +21,31 @@ import (
 )
 
 const (
-	oscapBinary        = "oscap"
-	scapContentDir     = "/usr/share/xml/scap/ssg/content"
-	osReleasePath      = "/etc/os-release"
+	oscapBinary    = "oscap"
+	scapContentDir = "/usr/share/xml/scap/ssg/content"
+	osReleasePath  = "/etc/os-release"
 )
 
 // Profile mappings for different OS families
 var profileMappings = map[string]map[string]string{
 	"level1_server": {
-		"ubuntu":  "xccdf_org.ssgproject.content_profile_cis_level1_server",
-		"debian":  "xccdf_org.ssgproject.content_profile_cis_level1_server",
-		"rhel":    "xccdf_org.ssgproject.content_profile_cis",
-		"centos":  "xccdf_org.ssgproject.content_profile_cis",
-		"rocky":   "xccdf_org.ssgproject.content_profile_cis",
-		"alma":    "xccdf_org.ssgproject.content_profile_cis",
-		"fedora":  "xccdf_org.ssgproject.content_profile_cis",
-		"sles":    "xccdf_org.ssgproject.content_profile_cis",
-		"opensuse":"xccdf_org.ssgproject.content_profile_cis",
+		"ubuntu":   "xccdf_org.ssgproject.content_profile_cis_level1_server",
+		"debian":   "xccdf_org.ssgproject.content_profile_cis_level1_server",
+		"rhel":     "xccdf_org.ssgproject.content_profile_cis",
+		"centos":   "xccdf_org.ssgproject.content_profile_cis",
+		"rocky":    "xccdf_org.ssgproject.content_profile_cis",
+		"alma":     "xccdf_org.ssgproject.content_profile_cis",
+		"fedora":   "xccdf_org.ssgproject.content_profile_cis",
+		"sles":     "xccdf_org.ssgproject.content_profile_cis",
+		"opensuse": "xccdf_org.ssgproject.content_profile_cis",
 	},
 	"level2_server": {
-		"ubuntu":  "xccdf_org.ssgproject.content_profile_cis_level2_server",
-		"debian":  "xccdf_org.ssgproject.content_profile_cis_level2_server",
-		"rhel":    "xccdf_org.ssgproject.content_profile_cis_server_l1",
-		"centos":  "xccdf_org.ssgproject.content_profile_cis_server_l1",
-		"rocky":   "xccdf_org.ssgproject.content_profile_cis_server_l1",
-		"alma":    "xccdf_org.ssgproject.content_profile_cis_server_l1",
+		"ubuntu": "xccdf_org.ssgproject.content_profile_cis_level2_server",
+		"debian": "xccdf_org.ssgproject.content_profile_cis_level2_server",
+		"rhel":   "xccdf_org.ssgproject.content_profile_cis_server_l1",
+		"centos": "xccdf_org.ssgproject.content_profile_cis_server_l1",
+		"rocky":  "xccdf_org.ssgproject.content_profile_cis_server_l1",
+		"alma":   "xccdf_org.ssgproject.content_profile_cis_server_l1",
 	},
 }
 
@@ -1131,7 +1131,7 @@ func (s *OpenSCAPScanner) RunOfflineRemediation(ctx context.Context, resultsPath
 
 // XCCDF result structures for parsing
 type xccdfTestResult struct {
-	XMLName xml.Name `xml:"TestResult"`
+	XMLName xml.Name          `xml:"TestResult"`
 	Rules   []xccdfRuleResult `xml:"rule-result"`
 }
 
@@ -1551,14 +1551,14 @@ func (s *OpenSCAPScanner) extractRuleMetadata(content string) map[string]ruleMet
 
 		// Debug logging for metadata extraction verification
 		s.logger.WithFields(map[string]interface{}{
-			"rule_id":          ruleID,
-			"title":            meta.Title,
-			"title_len":        len(meta.Title),
-			"desc_len":         len(meta.Description),
-			"desc_preview":     truncateString(meta.Description, 100),
-			"remediation_len":  len(meta.Remediation),
-			"severity":         meta.Severity,
-			"section":          meta.Section,
+			"rule_id":         ruleID,
+			"title":           meta.Title,
+			"title_len":       len(meta.Title),
+			"desc_len":        len(meta.Description),
+			"desc_preview":    truncateString(meta.Description, 100),
+			"remediation_len": len(meta.Remediation),
+			"severity":        meta.Severity,
+			"section":         meta.Section,
 		}).Debug("Extracted rule metadata")
 	}
 

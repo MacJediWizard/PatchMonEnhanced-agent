@@ -22,19 +22,19 @@ func GetTimezone() string {
 // Defaults to UTC if not set or invalid
 func GetTimezoneLocation() *time.Location {
 	tz := GetTimezone()
-	
+
 	// Handle UTC explicitly
 	if tz == "UTC" || tz == "Etc/UTC" {
 		return time.UTC
 	}
-	
+
 	// Try to load the timezone
 	loc, err := time.LoadLocation(tz)
 	if err != nil {
 		// Fallback to UTC if timezone is invalid
 		return time.UTC
 	}
-	
+
 	return loc
 }
 

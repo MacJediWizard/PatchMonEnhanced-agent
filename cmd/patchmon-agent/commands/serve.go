@@ -974,108 +974,108 @@ func connectOnce(out chan<- wsMsg, dockerEvents <-chan interface{}) error {
 		}
 		logger.WithField("type", payload.Type).Debug("Parsed WebSocket message type")
 		switch payload.Type {
-			case "settings_update":
-				logger.WithField("interval", payload.UpdateInterval).Info("settings_update received")
-				out <- wsMsg{kind: "settings_update", interval: payload.UpdateInterval}
-			case "report_now":
-				logger.Info("report_now received")
-				out <- wsMsg{kind: "report_now"}
-			case "update_agent":
-				logger.Info("update_agent received")
-				out <- wsMsg{kind: "update_agent"}
-			case "refresh_integration_status":
-				logger.Info("refresh_integration_status received")
-				out <- wsMsg{kind: "refresh_integration_status"}
-			case "docker_inventory_refresh":
-				logger.Info("docker_inventory_refresh received")
-				out <- wsMsg{kind: "docker_inventory_refresh"}
-			case "update_notification":
-				logger.WithFields(map[string]interface{}{
-					"version": payload.Version,
-					"force":   payload.Force,
-					"message": payload.Message,
-				}).Info("update_notification received")
-				out <- wsMsg{
-					kind:    "update_notification",
-					version: payload.Version,
-					force:   payload.Force,
-				}
-			case "integration_toggle":
-				logger.WithFields(map[string]interface{}{
-					"integration": payload.Integration,
-					"enabled":     payload.Enabled,
-				}).Info("integration_toggle received")
-				out <- wsMsg{
-					kind:               "integration_toggle",
-					integrationName:    payload.Integration,
-					integrationEnabled: payload.Enabled,
-				}
-			case "compliance_scan":
-				// Validate profile ID to prevent command injection
-				if err := validateProfileID(payload.ProfileID); err != nil {
-					logger.WithError(err).WithField("profile_id", payload.ProfileID).Warn("Invalid profile ID in compliance_scan message")
-					continue
-				}
-				profileType := payload.ProfileType
-				if profileType == "" {
-					profileType = "all"
-				}
-				logger.WithFields(map[string]interface{}{
-					"profile_type":       profileType,
-					"profile_id":         payload.ProfileID,
-					"enable_remediation": payload.EnableRemediation,
-				}).Info("compliance_scan received")
-				out <- wsMsg{
-					kind:                 "compliance_scan",
-					profileType:          profileType,
-					profileID:            payload.ProfileID,
-					enableRemediation:    payload.EnableRemediation,
-					fetchRemoteResources: payload.FetchRemoteResources,
-				}
-			case "upgrade_ssg":
-				logger.Info("upgrade_ssg received from WebSocket")
-				out <- wsMsg{kind: "upgrade_ssg"}
-				logger.Info("upgrade_ssg sent to message channel")
-			case "remediate_rule":
-				// Validate rule ID to prevent command injection
-				if err := validateRuleID(payload.RuleID); err != nil {
-					logger.WithError(err).WithField("rule_id", payload.RuleID).Warn("Invalid rule ID in remediate_rule message")
-					continue
-				}
-				logger.WithField("rule_id", payload.RuleID).Info("remediate_rule received")
-				out <- wsMsg{kind: "remediate_rule", ruleID: payload.RuleID}
-			case "docker_image_scan":
-				// Validate Docker image and container names to prevent command injection
-				if err := validateDockerImageName(payload.ImageName); err != nil {
-					logger.WithError(err).WithField("image_name", payload.ImageName).Warn("Invalid image name in docker_image_scan message")
-					continue
-				}
-				if err := validateDockerContainerName(payload.ContainerName); err != nil {
-					logger.WithError(err).WithField("container_name", payload.ContainerName).Warn("Invalid container name in docker_image_scan message")
-					continue
-				}
-				logger.WithFields(map[string]interface{}{
-					"image_name":      payload.ImageName,
-					"container_name":  payload.ContainerName,
-					"scan_all_images": payload.ScanAllImages,
-				}).Info("docker_image_scan received")
-				out <- wsMsg{
-					kind:          "docker_image_scan",
-					imageName:     payload.ImageName,
-					containerName: payload.ContainerName,
-					scanAllImages: payload.ScanAllImages,
-				}
-			case "set_compliance_on_demand_only":
-				logger.WithField("on_demand_only", payload.OnDemandOnly).Info("set_compliance_on_demand_only received")
-				out <- wsMsg{
-					kind:                   "set_compliance_on_demand_only",
-					complianceOnDemandOnly: payload.OnDemandOnly,
-				}
-			default:
-				if payload.Type != "" && payload.Type != "connected" {
-					logger.WithField("type", payload.Type).Warn("Unknown WebSocket message type")
-				}
+		case "settings_update":
+			logger.WithField("interval", payload.UpdateInterval).Info("settings_update received")
+			out <- wsMsg{kind: "settings_update", interval: payload.UpdateInterval}
+		case "report_now":
+			logger.Info("report_now received")
+			out <- wsMsg{kind: "report_now"}
+		case "update_agent":
+			logger.Info("update_agent received")
+			out <- wsMsg{kind: "update_agent"}
+		case "refresh_integration_status":
+			logger.Info("refresh_integration_status received")
+			out <- wsMsg{kind: "refresh_integration_status"}
+		case "docker_inventory_refresh":
+			logger.Info("docker_inventory_refresh received")
+			out <- wsMsg{kind: "docker_inventory_refresh"}
+		case "update_notification":
+			logger.WithFields(map[string]interface{}{
+				"version": payload.Version,
+				"force":   payload.Force,
+				"message": payload.Message,
+			}).Info("update_notification received")
+			out <- wsMsg{
+				kind:    "update_notification",
+				version: payload.Version,
+				force:   payload.Force,
 			}
+		case "integration_toggle":
+			logger.WithFields(map[string]interface{}{
+				"integration": payload.Integration,
+				"enabled":     payload.Enabled,
+			}).Info("integration_toggle received")
+			out <- wsMsg{
+				kind:               "integration_toggle",
+				integrationName:    payload.Integration,
+				integrationEnabled: payload.Enabled,
+			}
+		case "compliance_scan":
+			// Validate profile ID to prevent command injection
+			if err := validateProfileID(payload.ProfileID); err != nil {
+				logger.WithError(err).WithField("profile_id", payload.ProfileID).Warn("Invalid profile ID in compliance_scan message")
+				continue
+			}
+			profileType := payload.ProfileType
+			if profileType == "" {
+				profileType = "all"
+			}
+			logger.WithFields(map[string]interface{}{
+				"profile_type":       profileType,
+				"profile_id":         payload.ProfileID,
+				"enable_remediation": payload.EnableRemediation,
+			}).Info("compliance_scan received")
+			out <- wsMsg{
+				kind:                 "compliance_scan",
+				profileType:          profileType,
+				profileID:            payload.ProfileID,
+				enableRemediation:    payload.EnableRemediation,
+				fetchRemoteResources: payload.FetchRemoteResources,
+			}
+		case "upgrade_ssg":
+			logger.Info("upgrade_ssg received from WebSocket")
+			out <- wsMsg{kind: "upgrade_ssg"}
+			logger.Info("upgrade_ssg sent to message channel")
+		case "remediate_rule":
+			// Validate rule ID to prevent command injection
+			if err := validateRuleID(payload.RuleID); err != nil {
+				logger.WithError(err).WithField("rule_id", payload.RuleID).Warn("Invalid rule ID in remediate_rule message")
+				continue
+			}
+			logger.WithField("rule_id", payload.RuleID).Info("remediate_rule received")
+			out <- wsMsg{kind: "remediate_rule", ruleID: payload.RuleID}
+		case "docker_image_scan":
+			// Validate Docker image and container names to prevent command injection
+			if err := validateDockerImageName(payload.ImageName); err != nil {
+				logger.WithError(err).WithField("image_name", payload.ImageName).Warn("Invalid image name in docker_image_scan message")
+				continue
+			}
+			if err := validateDockerContainerName(payload.ContainerName); err != nil {
+				logger.WithError(err).WithField("container_name", payload.ContainerName).Warn("Invalid container name in docker_image_scan message")
+				continue
+			}
+			logger.WithFields(map[string]interface{}{
+				"image_name":      payload.ImageName,
+				"container_name":  payload.ContainerName,
+				"scan_all_images": payload.ScanAllImages,
+			}).Info("docker_image_scan received")
+			out <- wsMsg{
+				kind:          "docker_image_scan",
+				imageName:     payload.ImageName,
+				containerName: payload.ContainerName,
+				scanAllImages: payload.ScanAllImages,
+			}
+		case "set_compliance_on_demand_only":
+			logger.WithField("on_demand_only", payload.OnDemandOnly).Info("set_compliance_on_demand_only received")
+			out <- wsMsg{
+				kind:                   "set_compliance_on_demand_only",
+				complianceOnDemandOnly: payload.OnDemandOnly,
+			}
+		default:
+			if payload.Type != "" && payload.Type != "connected" {
+				logger.WithField("type", payload.Type).Warn("Unknown WebSocket message type")
+			}
+		}
 	}
 }
 
@@ -1571,15 +1571,15 @@ func runComplianceScanWithOptions(options *models.ComplianceScanOptions) error {
 			statusCounts[r.Status]++
 		}
 		logger.WithFields(map[string]interface{}{
-			"scan_index":       i,
-			"profile_name":     scan.ProfileName,
-			"profile_type":     scan.ProfileType,
-			"total_results":    len(scan.Results),
-			"result_statuses":  statusCounts,
-			"scan_passed":      scan.Passed,
-			"scan_failed":      scan.Failed,
-			"scan_warnings":    scan.Warnings,
-			"scan_skipped":     scan.Skipped,
+			"scan_index":      i,
+			"profile_name":    scan.ProfileName,
+			"profile_type":    scan.ProfileType,
+			"total_results":   len(scan.Results),
+			"result_statuses": statusCounts,
+			"scan_passed":     scan.Passed,
+			"scan_failed":     scan.Failed,
+			"scan_warnings":   scan.Warnings,
+			"scan_skipped":    scan.Skipped,
 		}).Info("DEBUG: Compliance payload scan details before sending")
 	}
 

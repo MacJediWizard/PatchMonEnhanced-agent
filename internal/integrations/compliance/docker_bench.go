@@ -154,10 +154,10 @@ func (s *DockerBenchScanner) RunScan(ctx context.Context) (*models.ComplianceSca
 
 	// Optional mounts - only add if path exists
 	optionalMounts := map[string]string{
-		"/lib/systemd/system":  "/lib/systemd/system:/lib/systemd/system:ro",
-		"/usr/bin/containerd":  "/usr/bin/containerd:/usr/bin/containerd:ro",
-		"/usr/bin/runc":        "/usr/bin/runc:/usr/bin/runc:ro",
-		"/usr/lib/systemd":     "/usr/lib/systemd:/usr/lib/systemd:ro",
+		"/lib/systemd/system": "/lib/systemd/system:/lib/systemd/system:ro",
+		"/usr/bin/containerd": "/usr/bin/containerd:/usr/bin/containerd:ro",
+		"/usr/bin/runc":       "/usr/bin/runc:/usr/bin/runc:ro",
+		"/usr/lib/systemd":    "/usr/lib/systemd:/usr/lib/systemd:ro",
 	}
 
 	// Add required mounts
@@ -373,14 +373,14 @@ func (s *DockerBenchScanner) parseOutput(output string) *models.ComplianceScan {
 		resultStatusCounts[r.Status]++
 	}
 	s.logger.WithFields(logrus.Fields{
-		"parse_counts":    debugStatusCounts,
-		"result_counts":   resultStatusCounts,
-		"total_results":   len(scan.Results),
-		"scan_passed":     scan.Passed,
-		"scan_failed":     scan.Failed,
-		"scan_warnings":   scan.Warnings,
-		"scan_skipped":    scan.Skipped,
-		"scan_total":      scan.TotalRules,
+		"parse_counts":  debugStatusCounts,
+		"result_counts": resultStatusCounts,
+		"total_results": len(scan.Results),
+		"scan_passed":   scan.Passed,
+		"scan_failed":   scan.Failed,
+		"scan_warnings": scan.Warnings,
+		"scan_skipped":  scan.Skipped,
+		"scan_total":    scan.TotalRules,
 	}).Info("Docker Bench parsing complete - debug status comparison")
 
 	return scan

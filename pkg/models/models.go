@@ -247,8 +247,8 @@ type Config struct {
 	LogFile                string          `yaml:"log_file" mapstructure:"log_file"`
 	LogLevel               string          `yaml:"log_level" mapstructure:"log_level"`
 	SkipSSLVerify          bool            `yaml:"skip_ssl_verify" mapstructure:"skip_ssl_verify"`
-	UpdateInterval         int             `yaml:"update_interval" mapstructure:"update_interval"`   // Interval in minutes
-	ReportOffset           int             `yaml:"report_offset" mapstructure:"report_offset"`       // Offset in seconds
+	UpdateInterval         int             `yaml:"update_interval" mapstructure:"update_interval"` // Interval in minutes
+	ReportOffset           int             `yaml:"report_offset" mapstructure:"report_offset"`     // Offset in seconds
 	Integrations           map[string]bool `yaml:"integrations" mapstructure:"integrations"`
 	ComplianceOnDemandOnly bool            `yaml:"compliance_on_demand_only" mapstructure:"compliance_on_demand_only"` // Skip compliance during scheduled reports
 }

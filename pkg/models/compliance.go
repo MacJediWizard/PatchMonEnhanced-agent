@@ -48,8 +48,8 @@ type ComplianceScan struct {
 
 // ComplianceData represents all compliance-related data
 type ComplianceData struct {
-	Scans       []ComplianceScan `json:"scans"`
-	OSInfo      ComplianceOSInfo `json:"os_info"`
+	Scans       []ComplianceScan      `json:"scans"`
+	OSInfo      ComplianceOSInfo      `json:"os_info"`
 	ScannerInfo ComplianceScannerInfo `json:"scanner_info"`
 }
 
